@@ -1,0 +1,232 @@
+/*
+ * player.js
+ * 這份檔案負責：玩家角色與掉落物件的資料結構、移動更新、動畫狀態與自身繪製邏輯
+ * 遊戲規則判定（吸收、丟棄、Flush、碰撞後處理）會交給 gameplay.js
+ */
+
+// 掉落資料物件：負責移動、存在狀態與自身繪製
+class DropData {
+    constructor(x, y, typeKey = chooseDataType(), options = {}) {
+        this.x = x;
+        this.y = y;
+        this.w = 28;
+        this.h = 28;
+        this.typeKey = typeKey;
+        this.vx = options.vx ?? 0;
+        this.vy = options.vy ?? randomBetween(1.2, 2.8);
+        this.active = true;
+        this.fromFlush = options.fromFlush ?? false;
+        this.fromDiscard = options.fromDiscard ?? false;
+        this.canCollide = options.canCollide ?? true;
+        this.noGravityMs = Math.max(0, options.noGravityMs ?? 0);
+        this.spin = Math.random() * Math.PI * 2;
+    }
+
+    update(step, speedScale = 1) {
+        if (!this.active) return;
+
+        const scaledStep = step * speedScale;
+
+        if (this.noGravityMs > 0) {
+            this.noGravityMs = Math.max(0, this.noGravityMs - step * 16.67);
+        } else if (this.fromFlush || this.fromDiscard) {
+            this.vy += 0.24 * scaledStep;
+            this.vx *= Math.pow(0.992, scaledStep);
+        }
+
+        this.x += this.vx * scaledStep;
+        this.y += this.vy * scaledStep;
+        this.spin += 0.08 * scaledStep;
+
+        if (this.x < -40 || this.x > GAME_WIDTH + 40 || this.y > GAME_HEIGHT + 48) {
+            this.active = false;
+        }
+    }
+
+    draw(context) {
+        if (!this.active) return;
+        const data = DATA_TYPES[this.typeKey];
+        drawDropIcon(context, data.sprite, this.x, this.y, this.w, this.h);
+
+        if (this.fromFlush || this.fromDiscard) {
+            context.save();
+            context.globalAlpha = 0.35;
+            context.strokeStyle = data.color;
+            context.lineWidth = 2;
+            context.beginPath();
+            context.arc(this.x + this.w / 2, this.y + this.h / 2, 18 + Math.sin(this.spin) * 2, 0, Math.PI * 2);
+            context.stroke();
+            context.restore();
+        }
+    }
+}
+
+// 玩家角色類別：負責移動、跳躍、衝刺、受擊與動畫更新
+class Player {
+    constructor() {
+        this.x = 96; // 玩家重生時的起始 X 座標
+        this.y = 320; // 玩家重生時的起始 Y 座標
+        this.prevY = this.y;
+        this.w = 32;
+        this.h = 36;
+        this.vx = 0;
+        this.vy = 0;
+        this.facingRight = true;
+        this.grounded = false;
+        this.state = "idle";
+        this.dashTimer = 0;
+        this.dashCooldown = 0;
+        this.invincible = false;
+        this.damageInvincibleMs = 0;
+        this.animTimer = 0;
+        this.animFrame = 0;
+        this.idleFrameMs = 0;
+        this.dead = false;
+        this.deathFrameIndex = 0;
+        this.deathTimer = null;
+    }
+
+    update(dt) {
+        if (this.dead) return;
+
+        const step = dt / 16.67;
+        const speed = 4.1;
+        const gravity = 0.55;
+        const jumpForce = -10.8;
+
+        this.prevY = this.y;
+        this.dashCooldown = Math.max(0, this.dashCooldown - dt);
+        this.damageInvincibleMs = Math.max(0, this.damageInvincibleMs - dt);
+        this.invincible = this.damageInvincibleMs > 0;
+
+        if (this.dashTimer > 0) {
+            this.dashTimer -= dt;
+            this.invincible = true;
+            this.state = "dash";
+            this.vx = this.facingRight ? 10.5 : -10.5;
+        } else {
+            if (keys.left) {
+                this.vx = -speed;
+                this.facingRight = false;
+                this.state = this.grounded ? "move" : "jump";
+            } else if (keys.right) {
+                this.vx = speed;
+                this.facingRight = true;
+                this.state = this.grounded ? "move" : "jump";
+            } else {
+                this.vx *= Math.pow(0.78, step);
+                if (Math.abs(this.vx) < 0.06) this.vx = 0;
+                this.state = this.grounded ? "idle" : "jump";
+            }
+
+            if (justPressed.jump && this.grounded) {
+                this.vy = jumpForce;
+                this.grounded = false;
+                this.state = "jump";
+            }
+
+            // 提前放開跳躍鍵時，縮短上升高度，讓跳躍手感更靈活
+            if (!keys.jump && this.vy < -3.5) {
+                this.vy = -3.5;
+            }
+
+            if (justPressed.dash && this.dashCooldown <= 0) {
+                this.dashTimer = 160;
+                this.dashCooldown = DASH_COOLDOWN_MS;
+                this.invincible = true;
+                this.state = "dash";
+            }
+        }
+
+        this.vy += gravity * step;
+        this.x += this.vx * step;
+        this.y += this.vy * step;
+
+        this.x = clamp(this.x, 0, GAME_WIDTH - this.w);
+
+        if (this.state === "idle") {
+            this.idleFrameMs += dt;
+            if (this.idleFrameMs >= IDLE_FRAME_INTERVAL_MS) {
+                this.idleFrameMs = 0;
+                this.animFrame = (this.animFrame + 1) % SPRITE_CONFIG.idleFrames.length;
+            }
+        } else {
+            this.idleFrameMs = 0;
+            this.animFrame = 0;
+        }
+    }
+
+    setRespawnInvincible() {
+        this.damageInvincibleMs = RESPAWN_INVINCIBLE_MS;
+    }
+
+    triggerDeath() {
+        if (this.dead) return;
+
+        this.dead = true;
+        this.state = "death";
+        this.vx = 0;
+        this.vy = 0;
+        this.deathFrameIndex = 0;
+
+        if (this.deathTimer) {
+            clearTimeout(this.deathTimer);
+        }
+
+        this.deathTimer = setTimeout(() => {
+            this.deathFrameIndex = 1;
+        }, DEATH_FRAME_SWITCH_MS);
+    }
+
+    draw(context) {
+        let frames = SPRITE_CONFIG.idleFrames;
+        let image = images.idleWaiting;
+        let frameIndex = this.animFrame;
+
+        if (this.dead || this.state === "death") {
+            frames = SPRITE_CONFIG.deathFrame;
+            image = images.idleAction;
+        } else if (game.flushPauseMs > 0) {
+            frames = SPRITE_CONFIG.skillFrames;
+            image = images.useSkill;
+        } else if (this.state === "move") {
+            frames = this.facingRight ? SPRITE_CONFIG.moveRight : SPRITE_CONFIG.moveLeft;
+            image = images.idleAction;
+        } else if (this.state === "dash") {
+            frames = this.facingRight ? SPRITE_CONFIG.dashRight : SPRITE_CONFIG.dashLeft;
+            image = images.idleAction;
+        } else if (this.state === "jump") {
+            frames = SPRITE_CONFIG.jumpFull;
+            image = images.idleAction;
+        }
+
+        if (this.dead) {
+            frameIndex = Math.min(this.deathFrameIndex, frames.length - 1);
+        } else if (game.flushPauseMs > 0) {
+            frameIndex = Math.floor(visualAnimMs / SKILL_FRAME_INTERVAL_MS) % frames.length;
+        }
+
+        const frame = frames[frameIndex] || frames[0];
+        const drawW = frame.w * 1.55;
+        const drawH = frame.h * 1.55;
+
+        context.save();
+        if (this.damageInvincibleMs > 0) {
+            context.globalAlpha = 0.42 + (Math.floor(visualAnimMs / 90) % 2) * 0.38;
+            context.shadowColor = "#32d6ff";
+            context.shadowBlur = 18;
+        } else if (this.invincible) {
+            context.globalAlpha = 0.82;
+            context.shadowColor = "#32d6ff";
+            context.shadowBlur = 18;
+        }
+        context.translate(this.x + this.w / 2, this.y + this.h / 2);
+        context.drawImage(image, frame.x, frame.y, frame.w, frame.h, -drawW / 2, -drawH / 2, drawW, drawH);
+        context.restore();
+
+        if (game.pending && !this.dead) {
+            const data = DATA_TYPES[game.pending.typeKey];
+            drawDropIcon(context, data.sprite, this.x + this.w / 2 - 14, this.y - 34, 28, 28);
+        }
+    }
+}
