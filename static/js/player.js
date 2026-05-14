@@ -7,11 +7,14 @@
 // 掉落資料物件：負責移動、存在狀態與自身繪製
 class DropData {
     constructor(x, y, typeKey = chooseDataType(), options = {}) {
+        // 掉落物的基本位置、尺寸與類型
         this.x = x;
         this.y = y;
         this.w = 28;
         this.h = 28;
         this.typeKey = typeKey;
+
+        // 掉落物的移動與物理狀態
         this.vx = options.vx ?? 0;
         this.vy = options.vy ?? randomBetween(1.2, 2.8);
         this.active = true;
@@ -22,6 +25,7 @@ class DropData {
         this.spin = Math.random() * Math.PI * 2;
     }
 
+    // 更新掉落物的位置、速度與存活狀態
     update(step, speedScale = 1) {
         if (!this.active) return;
 
@@ -43,6 +47,7 @@ class DropData {
         }
     }
 
+    // 繪製掉落物本體，以及 Flush / 丟棄時的外圈特效
     draw(context) {
         if (!this.active) return;
         const data = DATA_TYPES[this.typeKey];
@@ -64,16 +69,21 @@ class DropData {
 // 玩家角色類別：負責移動、跳躍、衝刺、受擊與動畫更新
 class Player {
     constructor() {
+        // 玩家初始位置與碰撞尺寸
         this.x = 96; // 玩家重生時的起始 X 座標
         this.y = 320; // 玩家重生時的起始 Y 座標
         this.prevY = this.y;
         this.w = 32;
         this.h = 36;
+
+        // 玩家移動、朝向與地面狀態
         this.vx = 0;
         this.vy = 0;
         this.facingRight = true;
         this.grounded = false;
         this.state = "idle";
+
+        // 玩家技能、無敵與動畫控制
         this.dashTimer = 0;
         this.dashCooldown = 0;
         this.invincible = false;
@@ -86,6 +96,7 @@ class Player {
         this.deathTimer = null;
     }
 
+    // 依輸入與物理參數更新玩家位置、速度與動畫狀態
     update(dt) {
         if (this.dead) return;
 
@@ -156,10 +167,12 @@ class Player {
         }
     }
 
+    // 讓玩家在重生後短暫進入無敵狀態
     setRespawnInvincible() {
         this.damageInvincibleMs = RESPAWN_INVINCIBLE_MS;
     }
 
+    // 觸發玩家死亡狀態，並切換到死亡動畫
     triggerDeath() {
         if (this.dead) return;
 
@@ -178,6 +191,7 @@ class Player {
         }, DEATH_FRAME_SWITCH_MS);
     }
 
+    // 依玩家目前狀態選擇對應動畫並繪製到畫面上
     draw(context) {
         let frames = SPRITE_CONFIG.idleFrames;
         let image = images.idleWaiting;

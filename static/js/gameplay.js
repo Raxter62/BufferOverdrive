@@ -13,20 +13,29 @@ function getRiskDropSpeedMultiplier() {
     return 1 + (game?.flushRiskLevel ?? 0) * RISK_DROP_SPEED_BONUS_PER_STACK;
 }
 
-// 依分數決定 Endless 模式的掉落節奏倍率
+// 依擊敗 Boss 後累積的分數，決定 Endless 模式的掉落節奏倍率
 function getEndlessSpawnFactor(score) {
-    if (score <= ENDLESS_SCORE) return 0.9;
-    if (score >= 10000) return 0.5;
+    if (game?.endlessStartScore == null) return 0.9;
 
-    if (score <= 6000) {
-        return 0.9 - ((score - ENDLESS_SCORE) / 1000) * 0.1;
+    const endlessScore = Math.max(0, score - game.endlessStartScore);
+    const [stage1, stage2, stage3, stage4] = ENDLESS_STAGE_THRESHOLDS;
+
+    if (endlessScore <= 0) return 0.9;
+    if (endlessScore >= stage4) return 0.5;
+
+    if (endlessScore <= stage1) {
+        return 0.9 - (endlessScore / stage1) * 0.1;
     }
 
-    if (score <= 7500) {
-        return 0.8 - ((score - 6000) / 1500) * 0.1;
+    if (endlessScore <= stage2) {
+        return 0.8 - ((endlessScore - stage1) / (stage2 - stage1)) * 0.1;
     }
 
-    return 0.7 - ((score - 7500) / 2500) * 0.2;
+    if (endlessScore <= stage3) {
+        return 0.7 - ((endlessScore - stage2) / (stage3 - stage2)) * 0.1;
+    }
+
+    return 0.6 - ((endlessScore - stage3) / (stage4 - stage3)) * 0.1;
 }
 
 // 依目前階段與風險狀態，選出下一個掉落資料類型
@@ -135,10 +144,7 @@ function absorbPending(reason = "manual") {
 
     const typeKey = game.pending.typeKey;
     const data = DATA_TYPES[typeKey];
-    
-    if (game.boss && game.boss.active) {
-        attackBoss(data.score / 10); // 傷害值基於資料的分數
-    }
+
     const oldCombo = game.combo || 0;
     game.combo = oldCombo + 1;
     if (oldCombo < 2 && game.combo >= 2) {
@@ -148,6 +154,10 @@ function absorbPending(reason = "manual") {
     const multiplier = 1 + 0.1 * game.combo;
     const finalScore = Math.round(data.score * multiplier);
 
+    if (game.boss && game.boss.active) {
+        attackBoss(finalScore / 10); // Boss 扣血改吃到 Combo 加成後的最終分數
+    }
+
     game.score += finalScore;
     game.buffer = clamp(game.buffer + data.buffer, 0, 100);
     game.absorbed += 1;
@@ -155,7 +165,7 @@ function absorbPending(reason = "manual") {
     game.typeStats[typeKey].absorbed += 1;
     game.typeStats[typeKey].buffer += data.buffer;
 
-    if (!game.bossTriggered && game.score >= 5000) {
+    if (!game.bossTriggered && game.score >= BOSS_TRIGGER_SCORE) {
         triggerBossSpawn();
     }
 
@@ -166,10 +176,6 @@ function absorbPending(reason = "manual") {
     recordEvent(reason === "manual" ? "absorb" : reason, typeKey);
     game.pending = null;
 
-    if (game.score >= ENDLESS_SCORE && game.phase === "NORMAL") {
-        enterEndless();
-    }
-
     maybeStartMapTransition();
 
     if (game.buffer >= 100) {
@@ -177,45 +183,6 @@ function absorbPending(reason = "manual") {
     }
 }
 
-async function triggerBossSpawn() {
-    game.bossTriggered = true; // 確保只觸發一次
-    
-    try {
-        const res = await fetch('/api/boss/spawn', { method: 'POST' });
-        const data = await res.json();
-        
-        // 初始化前端 Boss 狀態
-        game.boss = {
-            active: true,
-            hp: data.hp,
-            maxHp: data.hp,
-            phase: "STORM"
-        };
-        
-        // 可以在這裡加一個簡單的特效提示
-        console.log("ALERT: BOSS INCOMING!");
-    } catch (e) {
-        console.error("Failed to spawn boss:", e);
-    }
-}
-
-async function attackBoss(damage) {
-    try {
-        const res = await fetch("/api/boss/damage", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ damage })
-        });
-        const status = await res.json();
-        game.boss.hp = status.hp;
-        game.boss.active = status.active;
-        
-        if (!status.active) {
-            recordEvent("boss-defeated");
-            // 掉落大量獎勵或進入下一階段
-        }
-    } catch (e) { console.error("Boss damage error", e); }
-}
 // 丟棄待決策資料
 function discardPending() {
     if (!game.pending) return;
@@ -284,9 +251,19 @@ function triggerFlush() {
 
 // 進入 Endless 模式，降低當前 Buffer 並切換階段
 function enterEndless() {
+    if (game.phase === "ENDLESS") return;
+
     game.phase = "ENDLESS";
+    game.endlessStartScore = game.score;
+    game.endlessBannerStartMs = visualAnimMs;
     game.buffer = Math.floor(game.buffer * 0.35);
-    recordEvent("enter-endless");
+    dropsQueue = [];
+    game.dropSpawnMs = 0;
+    fetchDropsQueue();
+    fetchFlushDrops().then((data) => {
+        flushDropsData = data;
+    });
+    recordEvent("enter-endless", null, { endlessStartScore: game.endlessStartScore });
 }
 
 // 結束遊戲並顯示 Game Over 面板

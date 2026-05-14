@@ -211,7 +211,7 @@ function updateHud() {
         ui.packetMeta.textContent = `分數 +${data.score}｜Buffer +${data.buffer}%｜${(remaining / 1000).toFixed(1)} 秒內決策。${data.note}`;
         ui.decisionFill.style.width = `${(remaining / DECISION_TIME_MS) * 100}%`;
     } else {
-        ui.packetName.textContent = "??";
+        ui.packetName.textContent = "等待中";
         ui.packetName.style.color = "#ffd166";
         ui.packetMeta.textContent = "接住資料後有 1.5 秒可以決策。J 吸收，K 丟棄。";
         ui.decisionFill.style.width = "0%";
@@ -385,6 +385,88 @@ function drawFlushOverlay(context) {
     context.restore();
 }
 
+function drawEndlessUnlockedBanner(context) {
+    if (!game?.endlessBannerStartMs) return;
+
+    const elapsed = visualAnimMs - game.endlessBannerStartMs;
+    if (elapsed < 0 || elapsed > ENDLESS_BANNER_DURATION_MS) return;
+
+    const enterMs = 260;
+    const holdMs = 520;
+    const exitMs = ENDLESS_BANNER_DURATION_MS - enterMs - holdMs;
+    const centerX = GAME_WIDTH / 2;
+    const centerY = GAME_HEIGHT * 0.36;
+    const startX = -320;
+    const endX = GAME_WIDTH + 320;
+    let x = centerX;
+    let alpha = 1;
+    let scale = 1;
+
+    if (elapsed <= enterMs) {
+        const t = clamp(elapsed / enterMs, 0, 1);
+        const easeOut = 1 - Math.pow(1 - t, 3);
+        x = startX + (centerX - startX) * easeOut;
+        alpha = 0.28 + easeOut * 0.72;
+        scale = 0.9 + easeOut * 0.1;
+    } else if (elapsed <= enterMs + holdMs) {
+        const t = clamp((elapsed - enterMs) / holdMs, 0, 1);
+        const pulse = Math.sin(t * Math.PI * 4) * 5;
+        x = centerX + pulse;
+        scale = 1 + Math.sin(t * Math.PI * 2) * 0.018;
+    } else {
+        const t = clamp((elapsed - enterMs - holdMs) / exitMs, 0, 1);
+        const easeIn = t * t * t;
+        x = centerX + (endX - centerX) * easeIn;
+        alpha = 1 - easeIn;
+        scale = 1 + easeIn * 0.12;
+    }
+
+    const bandHeight = 94;
+    const bandY = centerY - bandHeight / 2;
+    const streakOffset = ((elapsed / 18) % 120) - 60;
+
+    context.save();
+    context.globalAlpha = alpha;
+
+    const band = context.createLinearGradient(0, bandY, 0, bandY + bandHeight);
+    band.addColorStop(0, "rgba(7, 16, 24, 0)");
+    band.addColorStop(0.18, "rgba(7, 16, 24, 0.78)");
+    band.addColorStop(0.5, "rgba(17, 43, 63, 0.92)");
+    band.addColorStop(0.82, "rgba(7, 16, 24, 0.78)");
+    band.addColorStop(1, "rgba(7, 16, 24, 0)");
+    context.fillStyle = band;
+    context.fillRect(0, bandY, GAME_WIDTH, bandHeight);
+
+    context.strokeStyle = "rgba(50, 214, 255, 0.7)";
+    context.lineWidth = 2;
+    context.strokeRect(10, bandY + 10, GAME_WIDTH - 20, bandHeight - 20);
+
+    for (let i = -1; i <= 6; i += 1) {
+        const streakX = streakOffset + i * 110;
+        context.fillStyle = i % 2 === 0 ? "rgba(50, 214, 255, 0.18)" : "rgba(102, 226, 140, 0.14)";
+        context.fillRect(streakX, bandY + 18, 54, bandHeight - 36);
+    }
+
+    context.translate(x, centerY);
+    context.scale(scale, scale);
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+
+    context.fillStyle = "#32d6ff";
+    context.shadowColor = "rgba(50, 214, 255, 0.72)";
+    context.shadowBlur = 20;
+    setArcadeFont(context, 26, 900);
+    context.fillText("ENDLESS", 0, -14);
+
+    context.fillStyle = "#ffd166";
+    context.shadowColor = "rgba(255, 209, 102, 0.68)";
+    context.shadowBlur = 16;
+    setArcadeFont(context, 14, 900);
+    context.fillText("UNLOCKED", 0, 24);
+
+    context.restore();
+}
+
 // 根據 Buffer 高低回傳對應的顏色樣式
 function getBufferStateColor(buffer) {
     if (buffer >= 82) return { fill: "#ff5c7c", glow: "rgba(255, 92, 124, 0.55)", accent: "#9b1d41" };
@@ -466,51 +548,27 @@ function drawGame() {
     drawMapTransition(ctx);
     drops.forEach((drop) => drop.draw(ctx));
     drawTrashZone(ctx);
-    
+
     // 3. 畫 Boss (獨立判斷，不影響其他東西繪製)
     if (game.boss && game.boss.active) {
-        drawBossVisual(ctx); // 建議拆成子函式，乾淨很多
+        drawBossVisual(ctx); // Boss 的實際繪製細節集中在 boss.js
     }
 
     // 4. 畫玩家與特效
     drawPendingPulse(ctx);
     drawDeathOverlay(ctx);
     player.draw(ctx);
-    
+
     // 5. 畫 UI 層 (最上層)
     drawFlushOverlay(ctx);
+    drawEndlessUnlockedBanner(ctx);
     drawBufferHud(ctx);
     drawTopRightSkillHud(ctx);
     drawRiskStatusHud(ctx);
     drawCombo(ctx);
 }
 
-// 建議把 Boss 繪製邏輯抽出來，避免弄亂 drawGame
-function drawBossVisual(context) {
-    const bx = GAME_WIDTH / 2 - 60;
-    const by = 50 + Math.sin(visualAnimMs / 500) * 10;
 
-    context.save();
-    context.shadowBlur = 20;
-    context.shadowColor = "#ff5c7c";
-    context.fillStyle = "#12202b";
-    context.strokeStyle = "#ff5c7c";
-    context.lineWidth = 4;
-    context.strokeRect(bx, by, 120, 60);
-    context.fillRect(bx, by, 120, 60);
-    
-    const hpRate = game.boss.hp / game.boss.maxHp;
-    context.fillStyle = "#2b3440";
-    context.fillRect(bx, by - 20, 120, 8);
-    context.fillStyle = "#ff5c7c";
-    context.fillRect(bx, by - 20, 120 * hpRate, 8);
-    
-    context.textAlign = "center";
-    setArcadeFont(context, 10);
-    context.fillStyle = "#fff";
-    context.fillText(`BOSS PHASE: ${game.boss.phase}`, GAME_WIDTH/2, by - 25);
-    context.restore();
-}
 
 // 繪製 Combo 圖示與連擊倍率
 function drawCombo(context) {
@@ -627,6 +685,134 @@ function drawGuideScreen(context) {
     context.fillText("HOLD K for FLUSH (reduce buffer)", 64, 276);
     context.fillText("FALL TO TRASH ZONE: BUFFER + 20%", 64, 308);
     context.fillText("GAMEOVER: BUFFER reaches 100%", 64, 340);
+
+    const blinkAlpha = 0.3 + (Math.sin(t / 360) + 1) * 0.3;
+    context.fillStyle = `rgba(255, 255, 255, ${blinkAlpha.toFixed(3)})`;
+    setArcadeFont(context, 14, 700);
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.fillText("PRESS ANY BUTTON TO START", GAME_WIDTH / 2, GAME_HEIGHT - 40);
+    context.restore();
+}
+
+function drawGuideSpriteFrame(context, image, frame, x, y, w, h) {
+    if (!image?.complete || !frame) return;
+    context.drawImage(image, frame.x, frame.y, frame.w, frame.h, x, y, w, h);
+}
+
+function drawGuideButtonIcon(context, key, x, y, active, label) {
+    const button = SPRITE_CONFIG.arcadeButtons[key];
+    const frame = (active ? button.down : button.up)[0];
+    drawGuideSpriteFrame(context, images.arcadeButtons, frame, x, y, 32, 32);
+}
+
+function drawGuideStickIcon(context, x, y, direction) {
+    const stick = SPRITE_CONFIG.arcadeStick[direction] || SPRITE_CONFIG.arcadeStick.idle;
+    drawGuideSpriteFrame(context, images.arcadeStick, stick.frames[0], x, y, 42, 54);
+}
+
+function drawGuideScreen(context) {
+    context.save();
+    const t = guideAnimMs;
+    const moveRight = Math.sin(t / 380) > 0;
+    const jumpActive = Math.sin(t / 280) > 0.25;
+    const dashActive = Math.sin(t / 220) > 0.1;
+    const flushActive = Math.sin(t / 260) > 0.15;
+    const goodPacket = Math.sin(t / 420) > 0;
+    const bufferRatio = 0.42 + ((Math.sin(t / 300) + 1) / 2) * 0.5;
+
+    const base = context.createLinearGradient(0, 0, 0, GAME_HEIGHT);
+    base.addColorStop(0, "#060b12");
+    base.addColorStop(0.55, "#0b1420");
+    base.addColorStop(1, "#090d15");
+    context.fillStyle = base;
+    context.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+
+    for (let y = 0; y < GAME_HEIGHT; y += 3) {
+        const alpha = 0.025 + (Math.sin((y * 0.19) + t * 0.018) + 1) * 0.018;
+        context.fillStyle = `rgba(80, 196, 255, ${alpha.toFixed(3)})`;
+        context.fillRect(0, y, GAME_WIDTH, 1);
+    }
+
+    for (let i = 0; i < 13; i += 1) {
+        const barY = (i * 39 + t * (0.06 + i * 0.004)) % GAME_HEIGHT;
+        const shift = Math.sin(t * 0.02 + i * 1.7) * (8 + (i % 3) * 6);
+        const w = 120 + (i * 23) % 280;
+        const x = ((i * 53) % (GAME_WIDTH + 140)) - 70 + shift;
+        context.fillStyle = i % 2 ? "rgba(255, 92, 124, 0.16)" : "rgba(50, 214, 255, 0.16)";
+        context.fillRect(x, barY, w, 6 + (i % 3));
+    }
+
+    context.fillStyle = "rgba(6, 11, 18, 0.60)";
+    context.fillRect(44, 68, GAME_WIDTH - 88, GAME_HEIGHT - 144);
+    context.strokeStyle = "rgba(50, 214, 255, 0.72)";
+    context.lineWidth = 2;
+    context.strokeRect(44, 68, GAME_WIDTH - 88, GAME_HEIGHT - 144);
+
+    context.fillStyle = "#32d6ff";
+    setArcadeFont(context, 28, 700);
+    context.textAlign = "left";
+    context.fillText("MISSION GUIDE", 64, 102);
+
+    context.fillStyle = "#edf7ff";
+    setArcadeFont(context, 20, 700);
+    const lineX = 64;
+    const iconGap = 12;
+    const moveText = "MOVE: A / D or LEFT / RIGHT";
+    const jumpText = "JUMP: SPACE";
+    const dashText = "DASH: SHIFT";
+    const decisionText = "DECISION DATA: J absorb, K discard";
+    const flushText = "HOLD K for FLUSH (reduce buffer)";
+    const trashText = "FALL TO TRASH ZONE: BUFFER + 20%";
+    const gameOverText = "GAMEOVER: BUFFER reaches 100%";
+
+    context.fillText(moveText, lineX, 148);
+    context.fillText(jumpText, lineX, 180);
+    context.fillText(dashText, lineX, 212);
+    context.fillText(decisionText, lineX, 244);
+    context.fillText(flushText, lineX, 276);
+    context.fillText(trashText, lineX, 308);
+    context.fillText(gameOverText, lineX, 340);
+
+    const moveIconX = lineX + context.measureText(moveText).width + iconGap;
+    const jumpIconX = lineX + context.measureText(jumpText).width + iconGap;
+    const dashIconX = lineX + context.measureText(dashText).width + iconGap;
+    const decisionIconX = lineX + context.measureText(decisionText).width + iconGap;
+    const flushIconX = lineX + context.measureText(flushText).width + iconGap;
+    const trashIconX = lineX + context.measureText(trashText).width + iconGap;
+    const gameOverIconX = lineX + context.measureText(gameOverText).width + iconGap;
+
+    drawGuideStickIcon(context, moveIconX, 122, moveRight ? "right" : "left");
+    drawGuideButtonIcon(context, "c", jumpIconX, 166, jumpActive, "SPACE");
+    drawGuideButtonIcon(context, "d", dashIconX, 198, dashActive, "SHIFT");
+
+    drawDropIcon(context, goodPacket ? DATA_TYPES.clean.sprite : DATA_TYPES.junk.sprite, decisionIconX, 232, 22, 22);
+    drawGuideButtonIcon(context, goodPacket ? "a" : "b", decisionIconX + 30, 230, true, goodPacket ? "J" : "K");
+
+    drawGuideButtonIcon(context, "b", flushIconX, 262, flushActive, "K");
+
+    context.save();
+    context.fillStyle = "rgba(255, 92, 124, 0.18)";
+    context.fillRect(trashIconX, 300, 84, 16);
+    context.strokeStyle = "rgba(255, 92, 124, 0.85)";
+    context.lineWidth = 2;
+    context.strokeRect(trashIconX, 300, 84, 16);
+    context.fillStyle = "#ff5c7c";
+    setArcadeFont(context, 7, 900);
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.fillText("TRASH", trashIconX + 42, 309);
+    context.restore();
+
+    context.save();
+    context.fillStyle = "rgba(0, 0, 0, 0.72)";
+    context.fillRect(gameOverIconX, 334, 84, 12);
+    context.strokeStyle = "rgba(237, 247, 255, 0.28)";
+    context.lineWidth = 1;
+    context.strokeRect(gameOverIconX, 334, 84, 12);
+    context.fillStyle = bufferRatio >= 0.82 ? "#ff5c7c" : bufferRatio >= 0.55 ? "#ffd166" : "#66e28c";
+    context.fillRect(gameOverIconX + 2, 336, Math.round(80 * bufferRatio), 8);
+    context.restore();
 
     const blinkAlpha = 0.3 + (Math.sin(t / 360) + 1) * 0.3;
     context.fillStyle = `rgba(255, 255, 255, ${blinkAlpha.toFixed(3)})`;
