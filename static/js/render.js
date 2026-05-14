@@ -458,19 +458,58 @@ function drawBufferHud(context) {
 
 // 繪製整個主遊戲畫面
 function drawGame() {
+    // 1. 先畫最底層的背景 (這必須放在最前面)
     drawBackground(ctx);
+
+    // 2. 畫地圖與物件
     platforms.forEach((platform) => drawPlatform(ctx, platform));
     drawMapTransition(ctx);
     drops.forEach((drop) => drop.draw(ctx));
     drawTrashZone(ctx);
+    
+    // 3. 畫 Boss (獨立判斷，不影響其他東西繪製)
+    if (game.boss && game.boss.active) {
+        drawBossVisual(ctx); // 建議拆成子函式，乾淨很多
+    }
+
+    // 4. 畫玩家與特效
     drawPendingPulse(ctx);
     drawDeathOverlay(ctx);
     player.draw(ctx);
+    
+    // 5. 畫 UI 層 (最上層)
     drawFlushOverlay(ctx);
     drawBufferHud(ctx);
     drawTopRightSkillHud(ctx);
     drawRiskStatusHud(ctx);
     drawCombo(ctx);
+}
+
+// 建議把 Boss 繪製邏輯抽出來，避免弄亂 drawGame
+function drawBossVisual(context) {
+    const bx = GAME_WIDTH / 2 - 60;
+    const by = 50 + Math.sin(visualAnimMs / 500) * 10;
+
+    context.save();
+    context.shadowBlur = 20;
+    context.shadowColor = "#ff5c7c";
+    context.fillStyle = "#12202b";
+    context.strokeStyle = "#ff5c7c";
+    context.lineWidth = 4;
+    context.strokeRect(bx, by, 120, 60);
+    context.fillRect(bx, by, 120, 60);
+    
+    const hpRate = game.boss.hp / game.boss.maxHp;
+    context.fillStyle = "#2b3440";
+    context.fillRect(bx, by - 20, 120, 8);
+    context.fillStyle = "#ff5c7c";
+    context.fillRect(bx, by - 20, 120 * hpRate, 8);
+    
+    context.textAlign = "center";
+    setArcadeFont(context, 10);
+    context.fillStyle = "#fff";
+    context.fillText(`BOSS PHASE: ${game.boss.phase}`, GAME_WIDTH/2, by - 25);
+    context.restore();
 }
 
 // 繪製 Combo 圖示與連擊倍率

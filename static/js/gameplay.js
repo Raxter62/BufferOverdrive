@@ -135,7 +135,10 @@ function absorbPending(reason = "manual") {
 
     const typeKey = game.pending.typeKey;
     const data = DATA_TYPES[typeKey];
-
+    
+    if (game.boss && game.boss.active) {
+        attackBoss(data.score / 10); // 傷害值基於資料的分數
+    }
     const oldCombo = game.combo || 0;
     game.combo = oldCombo + 1;
     if (oldCombo < 2 && game.combo >= 2) {
@@ -151,6 +154,10 @@ function absorbPending(reason = "manual") {
     game.handled += 1;
     game.typeStats[typeKey].absorbed += 1;
     game.typeStats[typeKey].buffer += data.buffer;
+
+    if (!game.bossTriggered && game.score >= 5000) {
+        triggerBossSpawn();
+    }
 
     if (reason.startsWith("auto")) {
         game.autoAbsorbed += 1;
@@ -170,6 +177,45 @@ function absorbPending(reason = "manual") {
     }
 }
 
+async function triggerBossSpawn() {
+    game.bossTriggered = true; // 確保只觸發一次
+    
+    try {
+        const res = await fetch('/api/boss/spawn', { method: 'POST' });
+        const data = await res.json();
+        
+        // 初始化前端 Boss 狀態
+        game.boss = {
+            active: true,
+            hp: data.hp,
+            maxHp: data.hp,
+            phase: "STORM"
+        };
+        
+        // 可以在這裡加一個簡單的特效提示
+        console.log("ALERT: BOSS INCOMING!");
+    } catch (e) {
+        console.error("Failed to spawn boss:", e);
+    }
+}
+
+async function attackBoss(damage) {
+    try {
+        const res = await fetch("/api/boss/damage", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ damage })
+        });
+        const status = await res.json();
+        game.boss.hp = status.hp;
+        game.boss.active = status.active;
+        
+        if (!status.active) {
+            recordEvent("boss-defeated");
+            // 掉落大量獎勵或進入下一階段
+        }
+    } catch (e) { console.error("Boss damage error", e); }
+}
 // 丟棄待決策資料
 function discardPending() {
     if (!game.pending) return;

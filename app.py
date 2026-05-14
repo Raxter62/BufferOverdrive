@@ -1,6 +1,7 @@
 import os
 import json
 import random
+import math
 from flask import Flask, render_template, request, jsonify
 
 app = Flask(__name__)
@@ -116,6 +117,73 @@ DATA_TYPES = {
     "heavy": {"weight": 10},
     "key": {"weight": 4}
 }
+# --- Boss 配置 ---
+BOSS_STATS = {
+    "max_hp": 500,
+    "active": False,
+    "current_hp": 500,
+}
+
+@app.route('/api/boss/status')
+def get_boss_status():
+    # 根據血量百分比決定階段
+    hp_percent = BOSS_STATS["current_hp"] / BOSS_STATS["max_hp"]
+    phase = "STORM" if hp_percent > 0.6 else "CHAOS" if hp_percent > 0.3 else "DESPERATE"
+    return jsonify({
+        "active": BOSS_STATS["active"],
+        "hp": BOSS_STATS["current_hp"],
+        "max_hp": BOSS_STATS["max_hp"],
+        "phase": phase
+    })
+
+@app.route('/api/boss/damage', methods=['POST'])
+def damage_boss():
+    damage = request.json.get('damage', 10)
+    BOSS_STATS["current_hp"] = max(0, BOSS_STATS["current_hp"] - damage)
+    if BOSS_STATS["current_hp"] <= 0:
+        BOSS_STATS["active"] = False
+    return jsonify({"hp": BOSS_STATS["current_hp"], "active": BOSS_STATS["active"]})
+
+@app.route('/api/boss/burst_drops')
+def get_boss_burst_drops():
+    """
+    Boss 階段的特殊資料噴發演算法
+    """
+    phase = request.args.get('phase', default='STORM')
+    count = 12 if phase != "DESPERATE" else 20
+    drops = []
+    
+    for i in range(count):
+        # Boss 噴發的資料通常比較髒 (riskLevel 設高)
+        drop_type = choose_data_type("ENDLESS", True, 2.0)
+        
+        # 噴發演算法
+        if phase == "STORM":
+            # 扇形噴發
+            angle = (i / count) * math.PI
+            vx = math.cos(angle) * 6
+            vy = math.sin(angle) * 4 + 2
+        elif phase == "CHAOS":
+            # 隨機散射
+            vx = random.uniform(-7, 7)
+            vy = random.uniform(2, 6)
+        else:
+            # DESPERATE: 極速垂直落下
+            vx = random.uniform(-1, 1)
+            vy = random.uniform(8, 12)
+
+        drops.append({"type": drop_type, "vx": vx, "vy": vy, "x": 320}) # 從中間噴出
+    return jsonify(drops)
+
+@app.route('/api/boss/spawn', methods=['POST'])
+def spawn_boss():
+    BOSS_STATS["current_hp"] = BOSS_STATS["max_hp"]
+    BOSS_STATS["active"] = True
+    return jsonify({
+        "status": "ok", 
+        "hp": BOSS_STATS["current_hp"], 
+        "max_hp": BOSS_STATS["max_hp"]
+    })
 
 LEADERBOARD_FILE = "leaderboard.json"
 GAME_LOGS_FILE = "game_logs.jsonl"
