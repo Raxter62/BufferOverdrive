@@ -3,48 +3,54 @@
  * 這份檔案負責：遊戲共用常數與狀態、API/排行榜、初始化流程、場景切換、主迴圈與按鍵綁定
  */
 
+// 遊戲畫面尺寸、操作節奏與核心數值設定
 const GAME_WIDTH = 640;
 const GAME_HEIGHT = 480;
-const TILE = 32;
 const DECISION_TIME_MS = 1500;
-const FLUSH_HOLD_MS = 650;
-const FLUSH_PAUSE_MS = 1100;
-const FLUSH_BUFFER_REDUCE = 25;
-const DASH_COOLDOWN_MS = 3000;
-const FLUSH_COOLDOWN_MS = 6000;
-const RISK_DECAY_MS = 10000;
-const RISK_BAD_DATA_BONUS_PER_STACK = 0.25;
-const RISK_DROP_SPEED_BONUS_PER_STACK = 0.10;
-const IDLE_FRAME_INTERVAL_MS = 400;
-const SKILL_FRAME_INTERVAL_MS = 300;
-const DISCARD_ANIM_MS = 900;
-const RESPAWN_INVINCIBLE_MS = 1000;
-const DEATH_FRAME_SWITCH_MS = 2000;
-const ENDLESS_SCORE = 5000;
-const MAP_SWAP_SCORE_STEP = 800;
-const MAP_SWAP_TELEGRAPH_MS = 3000;
+const FLUSH_HOLD_MS = 650; // Flush 需要按住的時間
+const FLUSH_PAUSE_MS = 1100; // Flush 後的暫停時間
+const FLUSH_BUFFER_REDUCE = 25; // Flush 後減少的 Buffer
+const DASH_COOLDOWN_MS = 3000; // Dash 的冷卻時間
+const FLUSH_COOLDOWN_MS = 6000; // Flush 的冷卻時間
+const RISK_DECAY_MS = 10000; // 風險衰退時間
+const RISK_BAD_DATA_BONUS_PER_STACK = 0.25; // 每次吸收不良資料，對後續 Flush 增加的風險
+const RISK_DROP_SPEED_BONUS_PER_STACK = 0.10; // 每次吸收不良資料，對後續 Flush 掉落的額外速度
+const IDLE_FRAME_INTERVAL_MS = 400; // 待機狀態的切圖間距
+const SKILL_FRAME_INTERVAL_MS = 300; // 技能狀態的切圖間距
+const RESPAWN_INVINCIBLE_MS = 1000; // 角色復活後的無敵時間
+const DEATH_FRAME_SWITCH_MS = 2000; // 角色死亡後切換下一幀的時間
+const BOSS_TRIGGER_SCORE = 5000; // 分數達標後觸發 Boss
+const ENDLESS_STAGE_THRESHOLDS = [1000, 2500, 5000, 8500]; // 擊敗 Boss 後的 Endless 節奏門檻
+const ENDLESS_BANNER_DURATION_MS = 1600; // 進入 Endless 時的提示動畫時長
+const MAP_SWAP_SCORE_STEP = 800; // 分數每達到此數值時觸發地圖切換
+const MAP_SWAP_TELEGRAPH_MS = 3000; // 地圖切換前的預告時間
 const ARCADE_FONT_FAMILY = "'Press Start 2P', 'VT323', 'Courier New', 'Noto Sans TC', monospace";
-const START_FRAME_ORDER = [1, 2, 3, 4, 5, 4, 3, 2, 1];
-const START_FRAME_INTERVAL_MS = 120;
-const TRASH_ZONE = { x: 0, y: 448, w: GAME_WIDTH, h: 32 };
+const START_FRAME_ORDER = [1, 2, 3, 4, 5, 4, 3, 2, 1]; // 開始畫面的切圖順序
+const START_FRAME_INTERVAL_MS = 120; // 開始畫面的切圖間距
+const TRASH_ZONE = { x: 0, y: 448, w: GAME_WIDTH, h: 32 }; // 垃圾資料存在區域
 const INITIAL_MAP_INDEX = 1;
-const LEADERBOARD_STORAGE_KEY = "bufferOverdrive.leaderboard.v1";
+const LEADERBOARD_STORAGE_KEY = "bufferOverdrive.leaderboard.v1"; // 保留給舊版本機排行榜用，目前未啟用
 const LEADERBOARD_LIMIT = 5;
 const SCORE_DIGITS = 6;
+
+// 遊戲目前可能處於的場景階段
 const SCENES = {
     INTRO: "intro",
     GUIDE: "guide",
     PLAYING: "playing"
 };
 
+// 所有圖片素材路徑；未使用欄位先保留，避免影響既有資源結構
 const IMAGE_PATHS = {
     idleAction: "/static/player_image/player/idle_action.png",
     idleWaiting: "/static/player_image/player/idle_waiting.png",
     useSkill: "/static/player_image/player/use_skills.png",
     skillicon: "/static/player_image/player/skills_icon.png",
+    arcadeButtons: "/static/player_image/object/Button.png",
+    arcadeStick: "/static/player_image/object/sti.png",
     dropData: "/static/player_image/object/drop_data.png",
     platform: "/static/player_image/background/platform.png",
-    state: "/static/player_image/player/skills_icon.png",
+    state: "/static/player_image/player/skills_icon.png", // 保留給舊版狀態圖示用途
     combo1: "/static/player_image/object/combo/1.png",
     combo2: "/static/player_image/object/combo/2.png",
     combo3: "/static/player_image/object/combo/3.png",
@@ -52,6 +58,7 @@ const IMAGE_PATHS = {
     combo5: "/static/player_image/object/combo/5.png",
 };
 
+// 各種角色、平台、掉落物與街機外框的 Sprite Sheet 切圖設定
 const SPRITE_CONFIG = {
     moveLeft: [{ x: 96, y: 0, w: 48, h: 48 }],
     moveRight: [{ x: 0, y: 0, w: 48, h: 48 }],
@@ -93,9 +100,46 @@ const SPRITE_CONFIG = {
             { x: 0, y: 64, w: 32, h: 32 },
             { x: 0, y: 96, w: 32, h: 32 }
         ]
+    },
+    arcadeButtons: {
+        a: {
+            target: { left: 450, top: 820 }, // A 鍵在街機外框上的顯示位置
+            up: [{ x: 22, y: 13, w: 81, h: 117 }],
+            down: [{ x: 22, y: 182, w: 81, h: 117 }]
+        },
+        b: {
+            target: { left: 566, top: 820 }, // B 鍵在街機外框上的顯示位置
+            up: [{ x: 142, y: 13, w: 81, h: 111 }],
+            down: [{ x: 142, y: 182, w: 81, h: 111 }]
+        },
+        c: {
+            target: { left: 682, top: 820 },
+            up: [{ x: 258, y: 13, w: 81, h: 117 }],
+            down: [{ x: 258, y: 182, w: 81, h: 117 }]
+        },
+        d: {
+            target: { left: 799, top: 820 },
+            up: [{ x: 376, y: 13, w: 81, h: 117 }],
+            down: [{ x: 376, y: 182, w: 81, h: 117 }]
+        }
+    },
+    arcadeStick: {
+        idle: {
+            target: { left: 205, top: 750 },
+            frames: [{ x: 120, y: 50, w: 120, h: 180 }]
+        },
+        left: {
+            target: { left: 180, top: 755 },
+            frames: [{ x: 100, y: 270, w: 140, h: 180 }]
+        },
+        right: {
+            target: { left: 200, top: 755 },
+            frames: [{ x: 110, y: 520, w: 140, h: 180 }]
+        }
     }
 };
 
+// 各資料類型的分數、Buffer 影響、顏色與提示文字
 const DATA_TYPES = {
     clean: {
         label: "Clean Data",
@@ -104,7 +148,7 @@ const DATA_TYPES = {
         sprite: 0,
         color: "#66e28c",
         weight: 30,
-        note: "蝛拙?鞈?嚗??嗚?"
+        note: "標準可用資料，分數穩定，適合優先吸收。"
     },
     compressed: {
         label: "Compressed Data",
@@ -113,7 +157,7 @@ const DATA_TYPES = {
         sprite: 1,
         color: "#32d6ff",
         weight: 24,
-        note: "雿???摰蝝舐????"
+        note: "體積小、Buffer 壓力低，適合補分與控場。"
     },
     junk: {
         label: "Junk Data",
@@ -122,16 +166,16 @@ const DATA_TYPES = {
         sprite: 2,
         color: "#91a5b5",
         weight: 18,
-        note: "雿?擃?嚗虜?拙?銝???"
+        note: "低價值雜訊資料，容易塞滿 Buffer，不建議硬吃。"
     },
     virus: {
         label: "Virus Data",
         score: 180,
-        buffer: 18,
+        buffer: 20,
         sprite: 3,
         color: "#ff5c7c",
         weight: 12,
-        note: "?銝嚗?憯?擃?"
+        note: "高分但風險也高，適合在局勢穩定時處理。"
     },
     heavy: {
         label: "Heavy Data",
@@ -140,7 +184,7 @@ const DATA_TYPES = {
         sprite: 4,
         color: "#ffd166",
         weight: 10,
-        note: "擃◢?芷??梢??"
+        note: "分數很高，但會大幅推升 Buffer 壓力。"
     },
     key: {
         label: "Key Packet",
@@ -149,10 +193,11 @@ const DATA_TYPES = {
         sprite: 4,
         color: "#8f7cff",
         weight: 4,
-        note: "?寞?鞈?嚗?雿擃???憟???"
+        note: "特殊封包，本身沒有分數，但會干擾節奏並增加壓力。"
     }
 };
 
+// 持續按住中的按鍵狀態
 const keys = {
     left: false,
     right: false,
@@ -162,6 +207,7 @@ const keys = {
     discard: false
 };
 
+// 只在當前 frame 內有效一次的按鍵狀態
 const justPressed = {
     jump: false,
     dash: false,
@@ -169,15 +215,18 @@ const justPressed = {
     discard: false
 };
 
+// 丟棄長按判定、素材載入狀態與圖片快取
 let discardHoldMs = 0;
 let discardUsedFlush = false;
 let imagesLoaded = false;
 const images = {};
 
+// Canvas 與主要繪圖 context
 const canvas = document.getElementById("gameCanvas");
 const ctx = canvas.getContext("2d");
 ctx.imageSmoothingEnabled = false;
 
+// 右側 HUD、結算面板與街機外框控制元件的 DOM 參照
 const ui = {
     score: document.getElementById("scoreValue"),
     bestScore: document.getElementById("bestScoreValue"),
@@ -190,9 +239,15 @@ const ui = {
     decisionFill: document.getElementById("decisionFill"),
     gameOverPanel: document.getElementById("gameOverPanel"),
     finalStats: document.getElementById("finalStats"),
-    restartButton: document.getElementById("restartButton")
+    restartButton: document.getElementById("restartButton"),
+    arcadeStick: document.getElementById("arcadeStick"),
+    arcadeButtonA: document.getElementById("arcadeButtonA"),
+    arcadeButtonB: document.getElementById("arcadeButtonB"),
+    arcadeButtonC: document.getElementById("arcadeButtonC"),
+    arcadeButtonD: document.getElementById("arcadeButtonD")
 };
 
+// 遊戲執行期間會持續變動的全域狀態
 let player;
 let platforms = [];
 let drops = [];
@@ -219,11 +274,88 @@ let displayedScore = 0;
 let lastLiveLeaderboardScore = null;
 let pendingLeaderboardEntry = null;
 
+// 從一組 frame 陣列中安全取出第一格設定
+function getSpriteFrame(frames) {
+    return Array.isArray(frames) && frames.length > 0 ? frames[0] : null;
+}
+
+// 把指定的 Sprite 貼到街機外框的按鈕或搖桿元素上
+function applyArcadeSprite(element, image, frames, target) {
+    if (!element || !image?.complete || !image.naturalWidth || !image.naturalHeight) {
+        element?.classList.remove("is-ready");
+        return;
+    }
+
+    const frame = getSpriteFrame(frames);
+    if (!frame || !target || !frame.w || !frame.h) {
+        element.classList.remove("is-ready");
+        return;
+    }
+
+    const drawWidth = target.w ?? frame.w;
+    const drawHeight = target.h ?? frame.h;
+    const scaleX = drawWidth / frame.w;
+    const scaleY = drawHeight / frame.h;
+
+    element.style.left = `${target.left}px`;
+    element.style.top = `${target.top}px`;
+    element.style.width = `${drawWidth}px`;
+    element.style.height = `${drawHeight}px`;
+    element.style.backgroundImage = `url("${image.src}")`;
+    element.style.backgroundSize = `${image.naturalWidth * scaleX}px ${image.naturalHeight * scaleY}px`;
+    element.style.backgroundPosition = `${-frame.x * scaleX}px ${-frame.y * scaleY}px`;
+    element.classList.add("is-ready");
+}
+
+// 依目前按鍵狀態同步街機外框上的按鈕與搖桿視覺
+function syncArcadeControls() {
+    applyArcadeSprite(
+        ui.arcadeButtonA,
+        images.arcadeButtons,
+        keys.absorb ? SPRITE_CONFIG.arcadeButtons.a.down : SPRITE_CONFIG.arcadeButtons.a.up,
+        SPRITE_CONFIG.arcadeButtons.a.target
+    );
+    applyArcadeSprite(
+        ui.arcadeButtonB,
+        images.arcadeButtons,
+        keys.discard ? SPRITE_CONFIG.arcadeButtons.b.down : SPRITE_CONFIG.arcadeButtons.b.up,
+        SPRITE_CONFIG.arcadeButtons.b.target
+    );
+    applyArcadeSprite(
+        ui.arcadeButtonC,
+        images.arcadeButtons,
+        keys.jump ? SPRITE_CONFIG.arcadeButtons.c.down : SPRITE_CONFIG.arcadeButtons.c.up,
+        SPRITE_CONFIG.arcadeButtons.c.target
+    );
+    applyArcadeSprite(
+        ui.arcadeButtonD,
+        images.arcadeButtons,
+        keys.dash ? SPRITE_CONFIG.arcadeButtons.d.down : SPRITE_CONFIG.arcadeButtons.d.up,
+        SPRITE_CONFIG.arcadeButtons.d.target
+    );
+
+    let stickState = SPRITE_CONFIG.arcadeStick.idle;
+    if (keys.left && !keys.right) {
+        stickState = SPRITE_CONFIG.arcadeStick.left;
+    } else if (keys.right && !keys.left) {
+        stickState = SPRITE_CONFIG.arcadeStick.right;
+    }
+
+    applyArcadeSprite(
+        ui.arcadeStick,
+        images.arcadeStick,
+        stickState.frames,
+        stickState.target
+    );
+}
+
+// 依開始畫面的播放順序建立每一幀素材路徑
 const startFrames = START_FRAME_ORDER.reduce((acc, frameNumber) => {
     acc[`start${frameNumber}`] = `/static/player_image/start/${frameNumber}.png`;
     return acc;
 }, {});
 
+// 從後端取得下一張可用地圖
 async function fetchNextMap(excludeIndex = -1) {
     if (isFetchingMap) return null;
     isFetchingMap = true;
@@ -239,6 +371,7 @@ async function fetchNextMap(excludeIndex = -1) {
     }
 }
 
+// 向後端要求下一批一般掉落物資料
 async function fetchDropsQueue() {
     if (isFetchingDrops || !game) return;
     isFetchingDrops = true;
@@ -254,6 +387,7 @@ async function fetchDropsQueue() {
     }
 }
 
+// 取得 Flush 使用時要噴出的掉落物資料
 async function fetchFlushDrops() {
     if (!game) return [];
     try {
@@ -322,6 +456,7 @@ async function saveLeaderboard(scores = leaderboardScores, keepalive = false) {
     }
 }
 
+// 在瀏覽器即將離開頁面時，使用較保守的方式提交排行榜
 function saveLeaderboardOnUnload(scores = leaderboardScores) {
     try {
         const payload = JSON.stringify(scores);
@@ -350,6 +485,7 @@ function createLeaderboardEntry(score) {
     };
 }
 
+// 先把本局分數暫存成待提交排行榜紀錄
 function queueScoreForLeaderboard(score) {
     pendingLeaderboardEntry = createLeaderboardEntry(score);
     renderLeaderboard(pendingLeaderboardEntry.score);
@@ -357,6 +493,7 @@ function queueScoreForLeaderboard(score) {
     updateBestScore(score);
 }
 
+// 將待提交排行榜正式合併後送回後端
 async function commitPendingLeaderboard() {
     if (!pendingLeaderboardEntry) return false;
 
@@ -375,6 +512,7 @@ async function commitPendingLeaderboard() {
     return true;
 }
 
+// 在頁面關閉前盡可能把待提交排行榜送出
 function commitPendingLeaderboardOnUnload() {
     if (!pendingLeaderboardEntry) return;
 
@@ -402,10 +540,15 @@ function createGameState() {
         autoAbsorbed: 0,
         flushes: 0,
         pending: null,
-        dropSpawnMs: 250,
+        dropSpawnMs: 350,
         flushPauseMs: 0,
         flushCooldownMs: 0,
         flushRiskLevel: 0,
+        bossTriggered: false, // 是否已經觸發過 Boss 登場
+        bossDefeated: false,
+        boss: null, // 當前 Boss 的前端同步狀態
+        endlessStartScore: null,
+        endlessBannerStartMs: null,
         nextMapSwapScore: MAP_SWAP_SCORE_STEP,
         mapTransition: null,
         elapsedMs: 0,
@@ -529,6 +672,7 @@ function gameLoop(time) {
     lastTime = time;
     visualAnimMs += dt;
     globalAnimTimer += 1;
+    syncArcadeControls();
 
     if (currentScene === SCENES.INTRO) {
         startAnimMs += dt;
@@ -552,7 +696,7 @@ function gameLoop(time) {
         if (game.flushPauseMs > 0) {
             updateFlushPause(dt);
         } else {
-            game.flushRiskLevel = Math.max(0, game.flushRiskLevel - dt / RISK_DECAY_MS);// Flush 危險值會隨時間逐漸下降
+            game.flushRiskLevel = Math.max(0, game.flushRiskLevel - dt / RISK_DECAY_MS); // Flush 危險值會隨時間逐漸下降
             updateInput(dt);
             updateDecision(dt);
             player.update(dt);
@@ -609,6 +753,7 @@ function setKey(code, pressed, browserEvent) {
     }
 }
 
+// 註冊鍵盤、離頁與重新開始按鈕事件
 function registerGameEvents() {
     window.addEventListener("keydown", (event) => {
         if (currentScene !== SCENES.PLAYING) {
@@ -639,11 +784,13 @@ function registerGameEvents() {
     });
 }
 
+// 啟動素材載入、事件綁定與遊戲入口流程
 function bootstrapGame() {
     registerGameEvents();
 
     loadImages(() => {
         assetsReady = true;
+        syncArcadeControls();
         if (!startLoopStarted) {
             startLoopStarted = true;
             requestAnimationFrame(gameLoop);
