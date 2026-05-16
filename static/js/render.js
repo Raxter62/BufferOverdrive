@@ -540,7 +540,16 @@ function drawBufferHud(context) {
 
 // 繪製整個主遊戲畫面
 function drawGame() {
-    // 1. 先畫最底層的背景 (這必須放在最前面)
+    ctx.save(); 
+
+    // 套用螢幕震動 (只震動遊戲世界)
+    if (screenShakeMs > 0) {
+        const dx = (Math.random() - 0.5) * screenShakeIntensity;
+        const dy = (Math.random() - 0.5) * screenShakeIntensity;
+        ctx.translate(dx, dy);
+    }
+
+    // 1. 先畫最底層的背景
     drawBackground(ctx);
 
     // 2. 畫地圖與物件
@@ -549,15 +558,32 @@ function drawGame() {
     drops.forEach((drop) => drop.draw(ctx));
     drawTrashZone(ctx);
 
-    // 3. 畫 Boss (獨立判斷，不影響其他東西繪製)
+    // 3. 畫 Boss
     if (game.boss && game.boss.active) {
-        drawBossVisual(ctx); // Boss 的實際繪製細節集中在 boss.js
+        drawBossVisual(ctx); 
     }
 
     // 4. 畫玩家與特效
     drawPendingPulse(ctx);
     drawDeathOverlay(ctx);
     player.draw(ctx);
+    drawEffectParticles(ctx);
+
+    ctx.restore(); // 復原畫布偏移，確保 UI 介面維持固定不晃動
+    // --- 新增：時空凍結 (緩速) 發動時的螢幕濾鏡 ---
+    if (slowMoTimerMs > 0) {
+        ctx.save();
+        ctx.fillStyle = "rgba(50, 214, 255, 0.12)"; // 淡淡的冰藍色覆蓋
+        ctx.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+        
+        // 加上一點掃描線閃爍感
+        if (Math.floor(visualAnimMs / 100) % 2 === 0) {
+             ctx.fillStyle = "rgba(50, 214, 255, 0.05)";
+             ctx.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+        }
+        ctx.restore();
+    }
+    // ------------------------------------------
 
     // 5. 畫 UI 層 (最上層)
     drawFlushOverlay(ctx);
@@ -821,4 +847,234 @@ function drawGuideScreen(context) {
     context.textBaseline = "middle";
     context.fillText("PRESS ANY BUTTON TO START", GAME_WIDTH / 2, GAME_HEIGHT - 40);
     context.restore();
+}
+
+// --- 新增：繪製爆炸粒子特效 ---
+function drawEffectParticles(context) {
+    if (effectParticles.length === 0) return;
+
+    context.save();
+    context.globalCompositeOperation = "lighter"; // 關鍵：讓顏色疊加產生高亮發光感
+
+    effectParticles.forEach(p => {
+        const alpha = Math.max(0, p.life / p.maxLife);
+        context.globalAlpha = alpha;
+        context.fillStyle = p.color;
+        context.shadowColor = p.color;
+        context.shadowBlur = p.size * 2.5; // 讓粒子自帶光暈
+        
+        context.beginPath();
+        context.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+        context.fill();
+    });
+
+    context.restore();
+}
+// ============================================================================
+// 以下為結算畫面的雙圖表繪製程式碼 (大字體清晰版)
+// ============================================================================
+
+// --- 1. 繪製單局 Buffer 壓力波動圖 ---
+function drawGameOverChart(canvas, history) {
+    if (!history || history.length === 0) return;
+    
+    const ctx = canvas.getContext('2d');
+    const w = canvas.width;
+    const h = canvas.height;
+    
+    // ⚠️ 加大內部邊距，留空間給變大的字
+    const padding = { top: 35, right: 30, bottom: 25, left: 55 };
+    const chartW = w - padding.left - padding.right;
+    const chartH = h - padding.top - padding.bottom;
+
+    ctx.clearRect(0, 0, w, h);
+
+    const minT = history[0].at;
+    const maxT = history[history.length - 1].at;
+    const duration = maxT - minT || 1;
+
+    ctx.fillStyle = "rgba(255, 92, 124, 0.08)";
+    ctx.fillRect(padding.left, padding.top, chartW, chartH * 0.2);
+
+    // ⚠️ 字體放大並加粗
+    ctx.font = "bold 13px 'Orbitron', 'Share Tech Mono', Consolas, monospace";
+
+    const yTicks = [0, 50, 80, 100];
+    ctx.textAlign = "right";
+    ctx.textBaseline = "middle";
+
+    yTicks.forEach(tick => {
+        const y = padding.top + chartH * (1 - tick / 100);
+        ctx.strokeStyle = tick === 80 ? "rgba(255, 92, 124, 0.5)" : "rgba(145, 165, 181, 0.15)";
+        ctx.lineWidth = tick === 80 ? 1.5 : 1;
+        if (tick === 80) ctx.setLineDash([4, 4]); 
+        
+        ctx.beginPath();
+        ctx.moveTo(padding.left, y);
+        ctx.lineTo(w - padding.right, y);
+        ctx.stroke();
+        ctx.setLineDash([]); 
+
+        ctx.fillStyle = tick >= 80 ? "#ff5c7c" : "#91a5b5";
+        ctx.fillText(tick + "%", padding.left - 8, y);
+    });
+
+    ctx.textAlign = "center";
+    ctx.textBaseline = "top";
+    ctx.fillStyle = "#91a5b5";
+    ctx.fillText("0s", padding.left, h - padding.bottom + 8);
+    ctx.fillText((duration / 1000).toFixed(1) + "s", padding.left + chartW, h - padding.bottom + 8);
+
+    ctx.textAlign = "left";
+    ctx.textBaseline = "bottom";
+    ctx.fillStyle = "#edf7ff";
+    ctx.font = "bold 15px 'Orbitron', 'Share Tech Mono', Consolas, monospace"; // 標題字再放大
+    ctx.fillText("SYSTEM LOAD", padding.left, padding.top - 12);
+    
+    // 圖例位置微調
+    ctx.font = "bold 13px 'Orbitron', 'Share Tech Mono', Consolas, monospace";
+    const legendX = w - padding.right - 70;
+    const legendY = padding.top - 16;
+    ctx.fillStyle = "#ff5c7c";
+    ctx.beginPath();
+    ctx.arc(legendX, legendY, 4.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#91a5b5";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    ctx.fillText("FLUSH", legendX + 10, legendY + 1);
+
+    ctx.beginPath();
+    ctx.strokeStyle = "#32d6ff";
+    ctx.lineWidth = 2.5;
+    ctx.lineJoin = "round";
+    ctx.shadowBlur = 8;
+    ctx.shadowColor = "#32d6ff";
+
+    history.forEach((point, index) => {
+        const x = padding.left + ((point.at - minT) / duration) * chartW;
+        const y = padding.top + chartH * (1 - point.buffer / 100);
+        if (index === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+    ctx.shadowBlur = 0; 
+
+    history.forEach(point => {
+        if (point.action === 'flush') {
+            const x = padding.left + ((point.at - minT) / duration) * chartW;
+            const y = padding.top + chartH * (1 - point.buffer / 100);
+            ctx.fillStyle = "#ff5c7c"; 
+            ctx.shadowColor = "#ff5c7c";
+            ctx.shadowBlur = 6;
+            ctx.beginPath();
+            ctx.arc(x, y, 5, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.shadowBlur = 0;
+        }
+    });
+}
+
+// --- 2. 繪製資料類型收集比例的五角雷達圖 ---
+function drawTypeRadarChart(canvas, typeStats) {
+    if (!typeStats) return;
+    
+    const ctx = canvas.getContext('2d');
+    const w = canvas.width;
+    const h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+
+    const categories = [
+        { key: 'clean', label: 'CLEAN', color: '#66e28c' },
+        { key: 'compressed', label: 'COMP', color: '#32d6ff' },
+        { key: 'heavy', label: 'HEAVY', color: '#ffd166' },
+        { key: 'virus', label: 'VIRUS', color: '#ff5c7c' },
+        { key: 'junk', label: 'JUNK', color: '#91a5b5' }
+    ];
+
+    let maxVal = 1;
+    const dataVals = categories.map(cat => {
+        const stat = typeStats[cat.key] || { absorbed: 0, discarded: 0 };
+        const total = stat.absorbed + stat.discarded; 
+        if (total > maxVal) maxVal = total;
+        return total;
+    });
+
+    const cx = w / 2;
+    const cy = h / 2 + 14; 
+    // ⚠️ 縮小一點點半徑，因為字變大了，避免字被切到
+    const radius = Math.min(w, h) / 2 - 40; 
+
+    ctx.strokeStyle = "rgba(145, 165, 181, 0.15)";
+    ctx.lineWidth = 1;
+    for (let level = 1; level <= 3; level++) {
+        const r = radius * (level / 3);
+        ctx.beginPath();
+        for (let i = 0; i < 5; i++) {
+            const angle = -Math.PI / 2 + (i * 2 * Math.PI / 5);
+            const px = cx + Math.cos(angle) * r;
+            const py = cy + Math.sin(angle) * r;
+            if (i === 0) ctx.moveTo(px, py);
+            else ctx.lineTo(px, py);
+        }
+        ctx.closePath();
+        ctx.stroke();
+    }
+
+    ctx.beginPath();
+    for (let i = 0; i < 5; i++) {
+        const angle = -Math.PI / 2 + (i * 2 * Math.PI / 5);
+        ctx.moveTo(cx, cy);
+        ctx.lineTo(cx + Math.cos(angle) * radius, cy + Math.sin(angle) * radius);
+    }
+    ctx.stroke();
+
+    ctx.beginPath();
+    const points = [];
+    for (let i = 0; i < 5; i++) {
+        const valueRatio = Math.max(0.05, dataVals[i] / maxVal); 
+        const r = radius * valueRatio;
+        const angle = -Math.PI / 2 + (i * 2 * Math.PI / 5);
+        const px = cx + Math.cos(angle) * r;
+        const py = cy + Math.sin(angle) * r;
+        points.push({x: px, y: py});
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+    }
+    ctx.closePath();
+    
+    ctx.fillStyle = "rgba(143, 124, 255, 0.35)"; 
+    ctx.fill();
+    ctx.strokeStyle = "#8f7cff";
+    ctx.lineWidth = 1.5;
+    ctx.shadowBlur = 10;
+    ctx.shadowColor = "#8f7cff";
+    ctx.stroke();
+    ctx.shadowBlur = 0; 
+
+    // ⚠️ 字體放大並加粗
+    ctx.font = "bold 13px 'Orbitron', 'Share Tech Mono', Consolas, monospace";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+
+    for (let i = 0; i < 5; i++) {
+        const angle = -Math.PI / 2 + (i * 2 * Math.PI / 5);
+        const cat = categories[i];
+        
+        ctx.fillStyle = cat.color;
+        ctx.beginPath();
+        ctx.arc(points[i].x, points[i].y, 3.5, 0, Math.PI * 2);
+        ctx.fill();
+
+        // ⚠️ 把字往外推更遠一點，才不會跟頂點卡在一起
+        const tx = cx + Math.cos(angle) * (radius + 20);
+        const ty = cy + Math.sin(angle) * (radius + 18);
+        ctx.fillText(cat.label, tx, ty);
+    }
+
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
+    ctx.fillStyle = "#edf7ff";
+    ctx.font = "bold 15px 'Orbitron', 'Share Tech Mono', Consolas, monospace"; // 標題放大
+    ctx.fillText("DATA PROFILE", 14, 10);
 }

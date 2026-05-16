@@ -50,6 +50,34 @@ class DropData {
     // 繪製掉落物本體，以及 Flush / 丟棄時的外圈特效
     draw(context) {
         if (!this.active) return;
+        // --- 新增：如果是緩速技能，繪製成冰藍色發光圓球 ---
+        if (this.typeKey === "skill_freeze") {
+            context.save();
+            context.translate(this.x + this.w / 2, this.y + this.h / 2);
+            context.rotate(this.spin); // 讓球體有一點旋轉感
+
+            // 畫發光外圈
+            context.shadowBlur = 15;
+            context.shadowColor = "#32d6ff";
+            context.fillStyle = "rgba(0,0,0,0.8)";
+            context.strokeStyle = "#32d6ff";
+            context.lineWidth = 3;
+            context.beginPath();
+            context.arc(0, 0, this.w / 2, 0, Math.PI * 2);
+            context.fill();
+            context.stroke();
+
+            // 畫中心圖示 (使用雪花/星號 *)
+            setArcadeFont(context, 16, 900);
+            context.fillStyle = "#32d6ff";
+            context.textAlign = "center";
+            context.textBaseline = "middle";
+            context.fillText("*", 0, 2); 
+            
+            context.restore();
+            return; // 畫完技能就結束，不畫後面的普通方塊
+        }
+        // ------------------------------------------
         const data = DATA_TYPES[this.typeKey];
         drawDropIcon(context, data.sprite, this.x, this.y, this.w, this.h);
 

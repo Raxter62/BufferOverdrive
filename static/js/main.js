@@ -273,6 +273,12 @@ let leaderboardScores = [];
 let displayedScore = 0;
 let lastLiveLeaderboardScore = null;
 let pendingLeaderboardEntry = null;
+// --- 新增：視覺特效全域變數 ---
+let screenShakeMs = 0;
+let screenShakeIntensity = 0;
+let effectParticles = [];
+// ----------------------------
+let slowMoTimerMs = 0;
 
 // 從一組 frame 陣列中安全取出第一格設定
 function getSpriteFrame(frames) {
@@ -692,6 +698,24 @@ function gameLoop(time) {
     if (game?.running) {
         game.elapsedMs += dt;
         game.flushCooldownMs = Math.max(0, game.flushCooldownMs - dt);
+        if (screenShakeMs > 0) {
+            screenShakeMs -= dt;
+        }
+        // --- 新增：更新緩速計時器 ---
+        if (slowMoTimerMs > 0) {
+            slowMoTimerMs -= dt;
+        }
+        // -----------------------
+        effectParticles.forEach(p => {
+            p.x += p.vx * (dt / 16.67);
+            p.y += p.vy * (dt / 16.67);
+            // 增加空氣阻力，讓粒子炸開後會減速，視覺更寫實
+            p.vx *= 0.92;
+            p.vy *= 0.92;
+            p.life -= dt;
+        });
+        // 過濾掉壽命結束的粒子
+        effectParticles = effectParticles.filter(p => p.life > 0);
         updateMapTransition(dt);
         if (game.flushPauseMs > 0) {
             updateFlushPause(dt);

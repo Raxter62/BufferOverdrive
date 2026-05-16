@@ -118,8 +118,10 @@ DATA_TYPES = {
     "junk": {"weight": 18},
     "virus": {"weight": 12},
     "heavy": {"weight": 10},
-    "key": {"weight": 4}
+    "key": {"weight": 4},
+    "skill_freeze": {"weight": 0}
 }
+
 # 目前 Boss 的共享狀態
 BOSS_STATS = {
     "max_hp": 400,
@@ -206,6 +208,10 @@ LEADERBOARD_FILE = "leaderboard.json"
 GAME_LOGS_FILE = "game_logs.jsonl"
 
 def choose_data_type(phase, flush_danger, risk_level):
+    # --- 新增：6% 機率掉落緩速技能球 (Flush 噴出的不掉落技能) ---
+    if not flush_danger and random.random() < 0.06: 
+        return "skill_freeze"
+    # --------------------------------------------------------
     """依模式、Flush 狀態與風險值決定下一個資料類型。"""
     bad_data_multiplier = 1 + risk_level * 0.25
     entries = []

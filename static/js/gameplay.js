@@ -8,9 +8,15 @@ function getRiskBadDataMultiplier() {
     return 1 + (game?.flushRiskLevel ?? 0) * RISK_BAD_DATA_BONUS_PER_STACK;
 }
 
-// 根據目前風險值，計算掉落速度倍率
+// 根據目前風險值與技能狀態，計算掉落速度倍率
 function getRiskDropSpeedMultiplier() {
-    return 1 + (game?.flushRiskLevel ?? 0) * RISK_DROP_SPEED_BONUS_PER_STACK;
+    let multiplier = 1 + (game?.flushRiskLevel ?? 0) * RISK_DROP_SPEED_BONUS_PER_STACK;
+    
+    // --- 新增：如果緩速技能發動中，速度剩下 40% (緩速 60%) ---
+    if (slowMoTimerMs > 0) {
+        multiplier *= 0.4; 
+    }
+    return multiplier;
 }
 
 // 依擊敗 Boss 後累積的分數，決定 Endless 模式的掉落節奏倍率
@@ -151,12 +157,9 @@ function absorbPending(reason = "manual") {
         game.comboAppearMs = visualAnimMs;
     }
 
-    const multiplier = 1 + 0.1 * game.combo;
-    const finalScore = Math.round(data.score * multiplier);
-
-    if (game.boss && game.boss.active) {
-        attackBoss(finalScore / 10); // Boss 扣血改吃到 Combo 加成後的最終分數
-    }
+    // 1. 計算既有的 Combo 倍率計算最終得分
+    const comboMultiplier = 1 + 0.1 * game.combo;
+    const finalScore = Math.round(data.score * comboMultiplier);
 
     game.score += finalScore;
     game.buffer = clamp(game.buffer + data.buffer, 0, 100);
@@ -173,6 +176,18 @@ function absorbPending(reason = "manual") {
         game.autoAbsorbed += 1;
     }
 
+    // 4. 打擊感強化
+    const px = player.x + player.w / 2;
+    const py = player.y + player.h / 2;
+    
+    if (typeKey === "virus" || typeKey === "heavy") {
+        triggerJuice(px, py, data.color, 35, 12, 350);
+    } else if (typeKey === "junk") {
+        triggerJuice(px, py, data.color, 12, 5, 150);
+    } else {
+        triggerJuice(px, py, data.color, 18, 7, 150);
+    }
+
     recordEvent(reason === "manual" ? "absorb" : reason, typeKey);
     game.pending = null;
 
@@ -183,18 +198,26 @@ function absorbPending(reason = "manual") {
     }
 }
 
-// 丟棄待決策資料
+/// 丟棄待決策資料
 function discardPending() {
     if (!game.pending) return;
 
     const typeKey = game.pending.typeKey;
+    const data = DATA_TYPES[typeKey]; // 取得資料屬性以獲取顏色
     throwPendingDrop(typeKey);
+    
+    // --- 新增：丟棄時的視覺回饋 ---
+    const px = player.x + player.w / 2;
+    const py = player.y + player.h / 2;
+    triggerJuice(px, py, data.color, 8, 4, 100); // 輕微震動與少量碎屑
+    // ----------------------------
+
     game.combo = 0;
     game.discarded += 1;
     game.handled += 1;
     game.typeStats[typeKey].discarded += 1;
     recordEvent("discard", typeKey);
-    game.pending = null;
+    game.pending = null; // ⚠️ 關鍵：這行如果被刪除，玩家手上的資料無法清空，會導致遊戲邏輯卡死
 }
 
 // 玩家碰到危險區或掉落後的重生處理
@@ -296,12 +319,50 @@ function endGame() {
     }
 
     gameOverRevealTimer = setTimeout(() => {
-        const typeBreakdown = Object.entries(game.typeStats)
-            .filter(([_, stats]) => stats.absorbed > 0 || stats.discarded > 0)
-            .map(([type, stats]) => `${DATA_TYPES[type].label}: 吸收${stats.absorbed}/丟棄${stats.discarded}`)
-            .join("｜");
+        // 1. 更新純文字統計部分 (覆蓋並清空先前的內容)
+        ui.finalStats.innerHTML = `
+            <div style="font-size:16px; margin-bottom: 8px; color:var(--text); letter-spacing: 2px;">
+                FINAL SCORE <strong style="color:var(--cyan); font-size:26px;">${game.score}</strong>
+            </div>
+            <div style="font-size:12px; color:var(--muted); display:flex; justify-content:center; gap: 14px; flex-wrap:wrap;">
+                <span>處理: <strong style="color:#fff">${game.handled}</strong></span>
+                <span>吸收: <strong style="color:#fff">${game.absorbed}</strong></span>
+                <span>丟棄: <strong style="color:#fff">${game.discarded}</strong></span>
+                <span>自動: <strong style="color:#fff">${game.autoAbsorbed}</strong></span>
+                <span>技能: <strong style="color:#fff">${game.flushes}</strong></span>
+            </div>
+        `;
+        
+        // 2. 直接建立圖表容器與畫布 (不再用 getElementById 抓取，避免 DOM 延遲錯誤)
+        const chartsContainer = document.createElement('div');
+        chartsContainer.style.display = 'flex';
+        chartsContainer.style.gap = '12px';
+        chartsContainer.style.marginTop = '16px';
+        chartsContainer.style.width = '100%';
+        
+        // 左側：壓力波動圖
+        const lineCanvas = document.createElement('canvas');
+        lineCanvas.className = 'game-over-canvas';
+        lineCanvas.style.flex = "1.8";
+        lineCanvas.width = 540;  // ⚠️ 提高解析度
+        lineCanvas.height = 260; // ⚠️ 提高解析度
+        chartsContainer.appendChild(lineCanvas);
 
-        ui.finalStats.innerHTML = `分數 <strong>${game.score}</strong><br>處理 <strong>${game.handled}</strong> 筆 (自動吸收 ${game.autoAbsorbed})<br>Flush <strong>${game.flushes}</strong> 次<br><br><span style="font-size: 0.8em; color: var(--muted);">${typeBreakdown}</span>`;
+        // 右側：資料比例五角雷達圖
+        const radarCanvas = document.createElement('canvas');
+        radarCanvas.className = 'game-over-canvas';
+        radarCanvas.style.flex = "1.2";
+        radarCanvas.width = 360;  // ⚠️ 提高解析度
+        radarCanvas.height = 260; // ⚠️ 提高解析度
+        chartsContainer.appendChild(radarCanvas);
+
+        // 將容器加入結算面板中
+        ui.finalStats.appendChild(chartsContainer);
+
+        // 3. 直接傳入剛建立的 lineCanvas 與 radarCanvas 變數給繪圖函式，保證 100% 成功！
+        drawGameOverChart(lineCanvas, game.history);
+        drawTypeRadarChart(radarCanvas, game.typeStats); 
+
         ui.gameOverPanel.classList.remove("hidden");
     }, DEATH_FRAME_SWITCH_MS * 2);
 }
@@ -377,6 +438,19 @@ function updateDrops(dt) {
         }
 
         if (rectsOverlap(player, drop)) {
+            // --- 新增：攔截技能球，自動觸發 ---
+            if (drop.typeKey === "skill_freeze") {
+                slowMoTimerMs = 4000; // 發動 4 秒的緩速
+                
+                // 觸發冰藍色粒子爆炸特效
+                triggerJuice(drop.x + drop.w / 2, drop.y + drop.h / 2, "#32d6ff", 40, 5, 150); 
+                
+                drop.active = false; // 吃掉後消失
+                return; // ⚠️ 關鍵：直接結束這次迴圈，不會執行下方的 catchDrop
+            }
+            // --------------------------------
+
+            // 原本接到一般掉落物的邏輯
             catchDrop(drop.typeKey);
             drop.active = false;
         }
@@ -435,5 +509,26 @@ function resolvePlayerPlatforms() {
             return;
         }
         respawnAfterFall();
+    }
+}
+
+// --- 新增：觸發打擊感特效 ---
+function triggerJuice(x, y, color, count, shakeIntensity, shakeDuration) {
+    screenShakeIntensity = shakeIntensity;
+    screenShakeMs = shakeDuration;
+
+    for (let i = 0; i < count; i++) {
+        const angle = Math.random() * Math.PI * 2;
+        const speed = Math.random() * 5 + 2; // 粒子噴射速度
+        effectParticles.push({
+            x: x,
+            y: y,
+            vx: Math.cos(angle) * speed,
+            vy: Math.sin(angle) * speed,
+            life: 300 + Math.random() * 300, // 存活時間
+            maxLife: 600,
+            size: Math.random() * 3 + 2, // 粒子大小
+            color: color
+        });
     }
 }
