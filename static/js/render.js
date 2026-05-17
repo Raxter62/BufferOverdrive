@@ -188,7 +188,30 @@ function drawRiskStatusHud(context) {
     context.restore();
 }
 
-// 更新右側 HUD 文字、決策條與分數顯示
+// 繪製 Freeze 狀態圖示，剩餘 2 秒內會開始閃爍提醒。
+function drawFreezeStatusHud(context) {
+    const remainingMs = Math.max(0, slowMoTimerMs);
+    if (remainingMs <= 0) return;
+
+    const source = getSkillSheetCell("freeze");
+    const blinkWindow = remainingMs <= 2000;
+    const blink = blinkWindow ? (Math.sin(globalAnimTimer / 9) + 1) / 2 : 1;
+    const iconAlpha = blinkWindow ? 0.35 + blink * 0.65 : 1;
+    const size = 26;
+    const x = 46;
+    const y = 52;
+
+    context.save();
+    context.globalAlpha = iconAlpha;
+    context.shadowColor = blinkWindow ? "rgba(50, 214, 255, 0.68)" : "rgba(50, 214, 255, 0.35)";
+    context.shadowBlur = blinkWindow ? 12 : 8;
+    if (source) {
+        context.drawImage(source.image, source.x, source.y, source.w, source.h, x, y, size, size);
+    }
+    context.restore();
+}
+
+// 更新右側 HUD 的數字、封包說明與決策進度條。
 function updateHud() {
     const animatedScore = animateScoreTo(game.score);
     renderMainScore(animatedScore);
@@ -217,6 +240,19 @@ function updateHud() {
         ui.decisionFill.style.width = "0%";
     }
 }
+
+// 依照封包圖示索引繪製掉落物。
+function drawDropIcon(context, spriteIndex, x, y, w, h) {
+    const source = SPRITE_CONFIG.drops[spriteIndex] || SPRITE_CONFIG.drops[0];
+    if (imagesLoaded && images.dropData?.complete) {
+        context.drawImage(images.dropData, source.x, source.y, source.w, source.h, x, y, w, h);
+        return;
+    }
+
+    context.fillStyle = "#32d6ff";
+    context.fillRect(x, y, w, h);
+}
+
 
 // 繪製單一掉落資料的圖示
 function drawDropIcon(context, spriteIndex, x, y, w, h) {
@@ -379,10 +415,53 @@ function drawFlushOverlay(context) {
     context.save();
     context.fillStyle = `rgba(255, 92, 124, ${0.1 + pulse * 0.18})`;
     context.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
-    context.fillStyle = "#ffd166";
-    setArcadeFont(context, 18);
-    context.fillText("FLUSH EXECUTING...", 18, 105);
     context.restore();
+}
+
+// 繪製左上角的執行中訊息佇列，依觸發順序排序並在補位時做平滑動畫
+function drawExecutionStatusBanners(context) {
+    const banners = [];
+
+    if (game.flushPauseMs > 0) {
+        banners.push({
+            key: "flush",
+            text: "FLUSH EXECUTING...",
+            color: "#ffd166",
+            startedAt: flushBannerStartMs ?? visualAnimMs
+        });
+    }
+
+    if (slowMoTimerMs > 0) {
+        banners.push({
+            key: "freeze",
+            text: "FREEZE EXECUTING...",
+            color: "#32d6ff",
+            startedAt: freezeBannerStartMs ?? visualAnimMs
+        });
+    }
+
+    if (banners.length === 0) return;
+
+    const baseX = 18;
+    const baseY = 105;
+    const slotGap = 24;
+
+    banners.sort((a, b) => a.startedAt - b.startedAt);
+
+    banners.forEach((banner, index) => {
+        const targetY = baseY + index * slotGap;
+        const currentY = executionBannerPositions[banner.key] ?? targetY;
+        const nextY = currentY + (targetY - currentY) * 0.22;
+        executionBannerPositions[banner.key] = Math.abs(targetY - nextY) < 0.35 ? targetY : nextY;
+
+        context.save();
+        context.fillStyle = banner.color;
+        context.shadowColor = banner.color;
+        context.shadowBlur = 8;
+        setArcadeFont(context, 18);
+        context.fillText(banner.text, baseX, executionBannerPositions[banner.key]);
+        context.restore();
+    });
 }
 
 function drawEndlessUnlockedBanner(context) {
@@ -540,10 +619,17 @@ function drawBufferHud(context) {
 
 // 繪製整個主遊戲畫面
 function drawGame() {
-    ctx.save(); 
+    // 玩家死亡時只保留原本黑化效果，不再混入震動、粒子或冰凍濾鏡
+    const preserveDeathOnly = Boolean(player?.dead);
+    ctx.save();
 
-    // 套用螢幕震動 (只震動遊戲世界)
-    if (screenShakeMs > 0) {
+    // 死亡時改用兩下大力震動，一般情況才使用平常的粒子震動
+    if (preserveDeathOnly && deathShakeMs > 0) {
+        const progress = 1 - deathShakeMs / DEATH_SHAKE_DURATION_MS;
+        const amplitude = (1 - progress) * 18;
+        const pulse = Math.sin(progress * Math.PI * 4);
+        ctx.translate(pulse * amplitude, Math.cos(progress * Math.PI * 4) * amplitude * 0.12);
+    } else if (!preserveDeathOnly && screenShakeMs > 0) {
         const dx = (Math.random() - 0.5) * screenShakeIntensity;
         const dy = (Math.random() - 0.5) * screenShakeIntensity;
         ctx.translate(dx, dy);
@@ -560,26 +646,28 @@ function drawGame() {
 
     // 3. 畫 Boss
     if (game.boss && game.boss.active) {
-        drawBossVisual(ctx); 
+        drawBossVisual(ctx);
     }
 
     // 4. 畫玩家與特效
     drawPendingPulse(ctx);
     drawDeathOverlay(ctx);
     player.draw(ctx);
-    drawEffectParticles(ctx);
+    if (!preserveDeathOnly) {
+        drawEffectParticles(ctx);
+    }
 
     ctx.restore(); // 復原畫布偏移，確保 UI 介面維持固定不晃動
     // --- 新增：時空凍結 (緩速) 發動時的螢幕濾鏡 ---
-    if (slowMoTimerMs > 0) {
+    if (!preserveDeathOnly && slowMoTimerMs > 0) {
         ctx.save();
         ctx.fillStyle = "rgba(50, 214, 255, 0.12)"; // 淡淡的冰藍色覆蓋
         ctx.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
-        
+
         // 加上一點掃描線閃爍感
         if (Math.floor(visualAnimMs / 100) % 2 === 0) {
-             ctx.fillStyle = "rgba(50, 214, 255, 0.05)";
-             ctx.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+            ctx.fillStyle = "rgba(50, 214, 255, 0.05)";
+            ctx.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
         }
         ctx.restore();
     }
@@ -587,10 +675,12 @@ function drawGame() {
 
     // 5. 畫 UI 層 (最上層)
     drawFlushOverlay(ctx);
+    drawExecutionStatusBanners(ctx);
     drawEndlessUnlockedBanner(ctx);
     drawBufferHud(ctx);
     drawTopRightSkillHud(ctx);
     drawRiskStatusHud(ctx);
+    drawFreezeStatusHud(ctx);
     drawCombo(ctx);
 }
 
@@ -664,79 +754,43 @@ function drawStartScreen(context) {
 }
 
 // 繪製操作說明畫面
-function drawGuideScreen(context) {
-    context.save();
-    const t = guideAnimMs;
-
-    const base = context.createLinearGradient(0, 0, 0, GAME_HEIGHT);
-    base.addColorStop(0, "#060b12");
-    base.addColorStop(0.55, "#0b1420");
-    base.addColorStop(1, "#090d15");
-    context.fillStyle = base;
-    context.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
-
-    // Glitch 風格的掃描線與橫向干擾背景
-    for (let y = 0; y < GAME_HEIGHT; y += 3) {
-        const alpha = 0.025 + (Math.sin((y * 0.19) + t * 0.018) + 1) * 0.018;
-        context.fillStyle = `rgba(80, 196, 255, ${alpha.toFixed(3)})`;
-        context.fillRect(0, y, GAME_WIDTH, 1);
-    }
-
-    for (let i = 0; i < 13; i += 1) {
-        const barY = (i * 39 + t * (0.06 + i * 0.004)) % GAME_HEIGHT;
-        const shift = Math.sin(t * 0.02 + i * 1.7) * (8 + (i % 3) * 6);
-        const w = 120 + (i * 23) % 280;
-        const x = ((i * 53) % (GAME_WIDTH + 140)) - 70 + shift;
-        context.fillStyle = i % 2 ? "rgba(255, 92, 124, 0.16)" : "rgba(50, 214, 255, 0.16)";
-        context.fillRect(x, barY, w, 6 + (i % 3));
-    }
-
-    context.fillStyle = "rgba(6, 11, 18, 0.60)";
-    context.fillRect(44, 68, GAME_WIDTH - 88, GAME_HEIGHT - 144);
-    context.strokeStyle = "rgba(50, 214, 255, 0.72)";
-    context.lineWidth = 2;
-    context.strokeRect(44, 68, GAME_WIDTH - 88, GAME_HEIGHT - 144);
-
-    context.fillStyle = "#32d6ff";
-    setArcadeFont(context, 20, 700);
-    context.textAlign = "left";
-    context.fillText("MISSION GUIDE", 64, 102);
-
-    context.fillStyle = "#edf7ff";
-    setArcadeFont(context, 15, 700);
-    context.fillText("MOVE: A / D or LEFT / RIGHT", 64, 148);
-    context.fillText("JUMP: SPACE", 64, 180);
-    context.fillText("DASH: SHIFT", 64, 212);
-    context.fillText("DECISION DATA: J absorb, K discard", 64, 244);
-    context.fillText("HOLD K for FLUSH (reduce buffer)", 64, 276);
-    context.fillText("FALL TO TRASH ZONE: BUFFER + 20%", 64, 308);
-    context.fillText("GAMEOVER: BUFFER reaches 100%", 64, 340);
-
-    const blinkAlpha = 0.3 + (Math.sin(t / 360) + 1) * 0.3;
-    context.fillStyle = `rgba(255, 255, 255, ${blinkAlpha.toFixed(3)})`;
-    setArcadeFont(context, 14, 700);
-    context.textAlign = "center";
-    context.textBaseline = "middle";
-    context.fillText("PRESS ANY BUTTON TO START", GAME_WIDTH / 2, GAME_HEIGHT - 40);
-    context.restore();
-}
-
 function drawGuideSpriteFrame(context, image, frame, x, y, w, h) {
     if (!image?.complete || !frame) return;
     context.drawImage(image, frame.x, frame.y, frame.w, frame.h, x, y, w, h);
 }
 
+// 在教學畫面繪製單顆街機按鈕圖示。
 function drawGuideButtonIcon(context, key, x, y, active, label) {
     const button = SPRITE_CONFIG.arcadeButtons[key];
     const frame = (active ? button.down : button.up)[0];
     drawGuideSpriteFrame(context, images.arcadeButtons, frame, x, y, 32, 32);
 }
 
+// 在教學畫面繪製搖桿方向示意。
 function drawGuideStickIcon(context, x, y, direction) {
     const stick = SPRITE_CONFIG.arcadeStick[direction] || SPRITE_CONFIG.arcadeStick.idle;
     drawGuideSpriteFrame(context, images.arcadeStick, stick.frames[0], x, y, 42, 54);
 }
 
+// 在教學畫面補上 Combo 視覺提示。
+function drawGuideComboIcon(context, x, y) {
+    const comboImage = images.combo3;
+
+    context.save();
+    if (comboImage?.complete) {
+        context.drawImage(comboImage, x, y - 16, 42, 42);
+    }
+    context.fillStyle = "#ffd166";
+    context.shadowColor = "rgba(255, 107, 0, 0.55)";
+    context.shadowBlur = 8;
+    setArcadeFont(context, 12, 900);
+    context.textAlign = "left";
+    context.textBaseline = "middle";
+    context.fillText("x3", x + 46, y + 6);
+    context.restore();
+}
+
+// 用圖示說明移動、決策、Flush、Combo 與失敗條件。
 function drawGuideScreen(context) {
     context.save();
     const t = guideAnimMs;
@@ -754,6 +808,7 @@ function drawGuideScreen(context) {
     context.fillStyle = base;
     context.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
 
+    // 掃描線與漂移色塊營造教學面板的電子雜訊感。
     for (let y = 0; y < GAME_HEIGHT; y += 3) {
         const alpha = 0.025 + (Math.sin((y * 0.19) + t * 0.018) + 1) * 0.018;
         context.fillStyle = `rgba(80, 196, 255, ${alpha.toFixed(3)})`;
@@ -781,63 +836,75 @@ function drawGuideScreen(context) {
     context.fillText("MISSION GUIDE", 64, 102);
 
     context.fillStyle = "#edf7ff";
-    setArcadeFont(context, 20, 700);
+    setArcadeFont(context, 18, 700);
     const lineX = 64;
     const iconGap = 12;
+    const lineStartY = 146;
+    const lineGap = 26;
     const moveText = "MOVE: A / D or LEFT / RIGHT";
     const jumpText = "JUMP: SPACE";
     const dashText = "DASH: SHIFT";
     const decisionText = "DECISION DATA: J absorb, K discard";
     const flushText = "HOLD K for FLUSH (reduce buffer)";
+    const comboText = "COMBO: increases the fractional rate";
     const trashText = "FALL TO TRASH ZONE: BUFFER + 20%";
     const gameOverText = "GAMEOVER: BUFFER reaches 100%";
 
-    context.fillText(moveText, lineX, 148);
-    context.fillText(jumpText, lineX, 180);
-    context.fillText(dashText, lineX, 212);
-    context.fillText(decisionText, lineX, 244);
-    context.fillText(flushText, lineX, 276);
-    context.fillText(trashText, lineX, 308);
-    context.fillText(gameOverText, lineX, 340);
+    // 逐行繪製說明文字，並為圖示示意保留對應位置。
+    const guideLines = [
+        { text: moveText, y: lineStartY },
+        { text: jumpText, y: lineStartY + lineGap * 1 },
+        { text: dashText, y: lineStartY + lineGap * 2 },
+        { text: decisionText, y: lineStartY + lineGap * 3 },
+        { text: flushText, y: lineStartY + lineGap * 4 },
+        { text: comboText, y: lineStartY + lineGap * 5 },
+        { text: trashText, y: lineStartY + lineGap * 6 },
+        { text: gameOverText, y: lineStartY + lineGap * 7 }
+    ];
+    guideLines.forEach(({ text, y }) => {
+        context.fillText(text, lineX, y);
+    });
 
     const moveIconX = lineX + context.measureText(moveText).width + iconGap;
     const jumpIconX = lineX + context.measureText(jumpText).width + iconGap;
     const dashIconX = lineX + context.measureText(dashText).width + iconGap;
     const decisionIconX = lineX + context.measureText(decisionText).width + iconGap;
     const flushIconX = lineX + context.measureText(flushText).width + iconGap;
+    const comboIconX = lineX + context.measureText(comboText).width + iconGap;
     const trashIconX = lineX + context.measureText(trashText).width + iconGap;
     const gameOverIconX = lineX + context.measureText(gameOverText).width + iconGap;
 
-    drawGuideStickIcon(context, moveIconX, 122, moveRight ? "right" : "left");
-    drawGuideButtonIcon(context, "c", jumpIconX, 166, jumpActive, "SPACE");
-    drawGuideButtonIcon(context, "d", dashIconX, 198, dashActive, "SHIFT");
+    drawGuideStickIcon(context, moveIconX, lineStartY - 24, moveRight ? "right" : "left");
+    drawGuideButtonIcon(context, "c", jumpIconX, lineStartY + lineGap * 1 - 14, jumpActive, "SPACE");
+    drawGuideButtonIcon(context, "d", dashIconX, lineStartY + lineGap * 2 - 14, dashActive, "SHIFT");
 
-    drawDropIcon(context, goodPacket ? DATA_TYPES.clean.sprite : DATA_TYPES.junk.sprite, decisionIconX, 232, 22, 22);
-    drawGuideButtonIcon(context, goodPacket ? "a" : "b", decisionIconX + 30, 230, true, goodPacket ? "J" : "K");
+    drawDropIcon(context, goodPacket ? DATA_TYPES.clean.sprite : DATA_TYPES.junk.sprite, decisionIconX, lineStartY + lineGap * 3 - 12, 22, 22);
+    drawGuideButtonIcon(context, goodPacket ? "a" : "b", decisionIconX + 30, lineStartY + lineGap * 3 - 14, true, goodPacket ? "J" : "K");
 
-    drawGuideButtonIcon(context, "b", flushIconX, 262, flushActive, "K");
+    drawGuideButtonIcon(context, "b", flushIconX, lineStartY + lineGap * 4 - 14, flushActive, "K");
+    drawGuideComboIcon(context, comboIconX, lineStartY + lineGap * 5 - 2);
 
     context.save();
     context.fillStyle = "rgba(255, 92, 124, 0.18)";
-    context.fillRect(trashIconX, 300, 84, 16);
+    context.fillRect(trashIconX, lineStartY + lineGap * 6 - 8, 84, 16);
     context.strokeStyle = "rgba(255, 92, 124, 0.85)";
     context.lineWidth = 2;
-    context.strokeRect(trashIconX, 300, 84, 16);
+    context.strokeRect(trashIconX, lineStartY + lineGap * 6 - 8, 84, 16);
     context.fillStyle = "#ff5c7c";
     setArcadeFont(context, 7, 900);
     context.textAlign = "center";
     context.textBaseline = "middle";
-    context.fillText("TRASH", trashIconX + 42, 309);
+    context.fillText("TRASH", trashIconX + 42, lineStartY + lineGap * 6 + 1);
     context.restore();
 
     context.save();
     context.fillStyle = "rgba(0, 0, 0, 0.72)";
-    context.fillRect(gameOverIconX, 334, 84, 12);
+    context.fillRect(gameOverIconX, lineStartY + lineGap * 7 - 6, 84, 12);
     context.strokeStyle = "rgba(237, 247, 255, 0.28)";
     context.lineWidth = 1;
-    context.strokeRect(gameOverIconX, 334, 84, 12);
+    context.strokeRect(gameOverIconX, lineStartY + lineGap * 7 - 6, 84, 12);
     context.fillStyle = bufferRatio >= 0.82 ? "#ff5c7c" : bufferRatio >= 0.55 ? "#ffd166" : "#66e28c";
-    context.fillRect(gameOverIconX + 2, 336, Math.round(80 * bufferRatio), 8);
+    context.fillRect(gameOverIconX + 2, lineStartY + lineGap * 7 - 4, Math.round(80 * bufferRatio), 8);
     context.restore();
 
     const blinkAlpha = 0.3 + (Math.sin(t / 360) + 1) * 0.3;
@@ -848,6 +915,7 @@ function drawGuideScreen(context) {
     context.fillText("PRESS ANY BUTTON TO START", GAME_WIDTH / 2, GAME_HEIGHT - 40);
     context.restore();
 }
+
 
 // --- 新增：繪製爆炸粒子特效 ---
 function drawEffectParticles(context) {
@@ -862,7 +930,7 @@ function drawEffectParticles(context) {
         context.fillStyle = p.color;
         context.shadowColor = p.color;
         context.shadowBlur = p.size * 2.5; // 讓粒子自帶光暈
-        
+
         context.beginPath();
         context.arc(p.x, p.y, p.size, 0, Math.PI * 2);
         context.fill();
@@ -877,11 +945,11 @@ function drawEffectParticles(context) {
 // --- 1. 繪製單局 Buffer 壓力波動圖 ---
 function drawGameOverChart(canvas, history) {
     if (!history || history.length === 0) return;
-    
+
     const ctx = canvas.getContext('2d');
     const w = canvas.width;
     const h = canvas.height;
-    
+
     // ⚠️ 加大內部邊距，留空間給變大的字
     const padding = { top: 35, right: 30, bottom: 25, left: 55 };
     const chartW = w - padding.left - padding.right;
@@ -907,13 +975,13 @@ function drawGameOverChart(canvas, history) {
         const y = padding.top + chartH * (1 - tick / 100);
         ctx.strokeStyle = tick === 80 ? "rgba(255, 92, 124, 0.5)" : "rgba(145, 165, 181, 0.15)";
         ctx.lineWidth = tick === 80 ? 1.5 : 1;
-        if (tick === 80) ctx.setLineDash([4, 4]); 
-        
+        if (tick === 80) ctx.setLineDash([4, 4]);
+
         ctx.beginPath();
         ctx.moveTo(padding.left, y);
         ctx.lineTo(w - padding.right, y);
         ctx.stroke();
-        ctx.setLineDash([]); 
+        ctx.setLineDash([]);
 
         ctx.fillStyle = tick >= 80 ? "#ff5c7c" : "#91a5b5";
         ctx.fillText(tick + "%", padding.left - 8, y);
@@ -930,7 +998,7 @@ function drawGameOverChart(canvas, history) {
     ctx.fillStyle = "#edf7ff";
     ctx.font = "bold 15px 'Orbitron', 'Share Tech Mono', Consolas, monospace"; // 標題字再放大
     ctx.fillText("SYSTEM LOAD", padding.left, padding.top - 12);
-    
+
     // 圖例位置微調
     ctx.font = "bold 13px 'Orbitron', 'Share Tech Mono', Consolas, monospace";
     const legendX = w - padding.right - 70;
@@ -958,13 +1026,13 @@ function drawGameOverChart(canvas, history) {
         else ctx.lineTo(x, y);
     });
     ctx.stroke();
-    ctx.shadowBlur = 0; 
+    ctx.shadowBlur = 0;
 
     history.forEach(point => {
         if (point.action === 'flush') {
             const x = padding.left + ((point.at - minT) / duration) * chartW;
             const y = padding.top + chartH * (1 - point.buffer / 100);
-            ctx.fillStyle = "#ff5c7c"; 
+            ctx.fillStyle = "#ff5c7c";
             ctx.shadowColor = "#ff5c7c";
             ctx.shadowBlur = 6;
             ctx.beginPath();
@@ -978,7 +1046,7 @@ function drawGameOverChart(canvas, history) {
 // --- 2. 繪製資料類型收集比例的五角雷達圖 ---
 function drawTypeRadarChart(canvas, typeStats) {
     if (!typeStats) return;
-    
+
     const ctx = canvas.getContext('2d');
     const w = canvas.width;
     const h = canvas.height;
@@ -995,15 +1063,15 @@ function drawTypeRadarChart(canvas, typeStats) {
     let maxVal = 1;
     const dataVals = categories.map(cat => {
         const stat = typeStats[cat.key] || { absorbed: 0, discarded: 0 };
-        const total = stat.absorbed + stat.discarded; 
+        const total = stat.absorbed + stat.discarded;
         if (total > maxVal) maxVal = total;
         return total;
     });
 
     const cx = w / 2;
-    const cy = h / 2 + 14; 
+    const cy = h / 2 + 14;
     // ⚠️ 縮小一點點半徑，因為字變大了，避免字被切到
-    const radius = Math.min(w, h) / 2 - 40; 
+    const radius = Math.min(w, h) / 2 - 40;
 
     ctx.strokeStyle = "rgba(145, 165, 181, 0.15)";
     ctx.lineWidth = 1;
@@ -1032,25 +1100,25 @@ function drawTypeRadarChart(canvas, typeStats) {
     ctx.beginPath();
     const points = [];
     for (let i = 0; i < 5; i++) {
-        const valueRatio = Math.max(0.05, dataVals[i] / maxVal); 
+        const valueRatio = Math.max(0.05, dataVals[i] / maxVal);
         const r = radius * valueRatio;
         const angle = -Math.PI / 2 + (i * 2 * Math.PI / 5);
         const px = cx + Math.cos(angle) * r;
         const py = cy + Math.sin(angle) * r;
-        points.push({x: px, y: py});
+        points.push({ x: px, y: py });
         if (i === 0) ctx.moveTo(px, py);
         else ctx.lineTo(px, py);
     }
     ctx.closePath();
-    
-    ctx.fillStyle = "rgba(143, 124, 255, 0.35)"; 
+
+    ctx.fillStyle = "rgba(143, 124, 255, 0.35)";
     ctx.fill();
     ctx.strokeStyle = "#8f7cff";
     ctx.lineWidth = 1.5;
     ctx.shadowBlur = 10;
     ctx.shadowColor = "#8f7cff";
     ctx.stroke();
-    ctx.shadowBlur = 0; 
+    ctx.shadowBlur = 0;
 
     // ⚠️ 字體放大並加粗
     ctx.font = "bold 13px 'Orbitron', 'Share Tech Mono', Consolas, monospace";
@@ -1060,7 +1128,7 @@ function drawTypeRadarChart(canvas, typeStats) {
     for (let i = 0; i < 5; i++) {
         const angle = -Math.PI / 2 + (i * 2 * Math.PI / 5);
         const cat = categories[i];
-        
+
         ctx.fillStyle = cat.color;
         ctx.beginPath();
         ctx.arc(points[i].x, points[i].y, 3.5, 0, Math.PI * 2);

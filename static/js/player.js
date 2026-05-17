@@ -50,7 +50,8 @@ class DropData {
     // 繪製掉落物本體，以及 Flush / 丟棄時的外圈特效
     draw(context) {
         if (!this.active) return;
-        // --- 新增：如果是緩速技能，繪製成冰藍色發光圓球 ---
+
+        // Freeze 技能球使用獨立的視覺表現，避免和一般封包混淆。
         if (this.typeKey === "skill_freeze") {
             context.save();
             context.translate(this.x + this.w / 2, this.y + this.h / 2);
@@ -72,15 +73,17 @@ class DropData {
             context.fillStyle = "#32d6ff";
             context.textAlign = "center";
             context.textBaseline = "middle";
-            context.fillText("*", 0, 2); 
-            
+            setArcadeFont(context, 16, 900);
+            context.fillText("*", 0, 2);
+
             context.restore();
-            return; // 畫完技能就結束，不畫後面的普通方塊
+            return;
         }
-        // ------------------------------------------
+
         const data = DATA_TYPES[this.typeKey];
         drawDropIcon(context, data.sprite, this.x, this.y, this.w, this.h);
 
+        // Flush 與丟棄形成的拋物線封包外圈會加上提示光環。
         if (this.fromFlush || this.fromDiscard) {
             context.save();
             context.globalAlpha = 0.35;
@@ -266,6 +269,7 @@ class Player {
         context.drawImage(image, frame.x, frame.y, frame.w, frame.h, -drawW / 2, -drawH / 2, drawW, drawH);
         context.restore();
 
+        // 玩家頭上會顯示目前正在等待決策的資料
         if (game.pending && !this.dead) {
             const data = DATA_TYPES[game.pending.typeKey];
             drawDropIcon(context, data.sprite, this.x + this.w / 2 - 14, this.y - 34, 28, 28);

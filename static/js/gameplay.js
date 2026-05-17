@@ -11,10 +11,10 @@ function getRiskBadDataMultiplier() {
 // 根據目前風險值與技能狀態，計算掉落速度倍率
 function getRiskDropSpeedMultiplier() {
     let multiplier = 1 + (game?.flushRiskLevel ?? 0) * RISK_DROP_SPEED_BONUS_PER_STACK;
-    
+
     // --- 新增：如果緩速技能發動中，速度剩下 40% (緩速 60%) ---
     if (slowMoTimerMs > 0) {
-        multiplier *= 0.4; 
+        multiplier *= 0.5;
     }
     return multiplier;
 }
@@ -161,6 +161,10 @@ function absorbPending(reason = "manual") {
     const comboMultiplier = 1 + 0.1 * game.combo;
     const finalScore = Math.round(data.score * comboMultiplier);
 
+    if (game.boss && game.boss.active) {
+        attackBoss(finalScore / 10); // Boss 扣血吃到 Combo 後的最終分數。
+    }
+
     game.score += finalScore;
     game.buffer = clamp(game.buffer + data.buffer, 0, 100);
     game.absorbed += 1;
@@ -179,7 +183,7 @@ function absorbPending(reason = "manual") {
     // 4. 打擊感強化
     const px = player.x + player.w / 2;
     const py = player.y + player.h / 2;
-    
+
     if (typeKey === "virus" || typeKey === "heavy") {
         triggerJuice(px, py, data.color, 35, 12, 350);
     } else if (typeKey === "junk") {
@@ -198,26 +202,25 @@ function absorbPending(reason = "manual") {
     }
 }
 
-/// 丟棄待決策資料
+// 丟棄待決策封包：重置 Combo，並將封包轉成可視的拋出物件。
 function discardPending() {
     if (!game.pending) return;
 
     const typeKey = game.pending.typeKey;
-    const data = DATA_TYPES[typeKey]; // 取得資料屬性以獲取顏色
+    const data = DATA_TYPES[typeKey]; // 取出資料屬性以取得顏色。
     throwPendingDrop(typeKey);
-    
-    // --- 新增：丟棄時的視覺回饋 ---
+
+    // 丟棄時仍保留輕量的視覺回饋。
     const px = player.x + player.w / 2;
     const py = player.y + player.h / 2;
-    triggerJuice(px, py, data.color, 8, 4, 100); // 輕微震動與少量碎屑
-    // ----------------------------
+    triggerJuice(px, py, data.color, 8, 4, 100);
 
     game.combo = 0;
     game.discarded += 1;
     game.handled += 1;
     game.typeStats[typeKey].discarded += 1;
     recordEvent("discard", typeKey);
-    game.pending = null; // ⚠️ 關鍵：這行如果被刪除，玩家手上的資料無法清空，會導致遊戲邏輯卡死
+    game.pending = null; // 封包已離手，不再保留決策狀態。
 }
 
 // 玩家碰到危險區或掉落後的重生處理
@@ -245,9 +248,14 @@ function respawnAfterFall(applyBufferPenalty = true) {
     recordEvent("fall-respawn");
 }
 
-// 發動 Flush：降低 Buffer，但提高風險並噴出危險資料
+// 啟動 Flush：降低 Buffer、增加風險值，並生成反噴波。
 function triggerFlush() {
     if (game.buffer <= 0 || !game.running) return;
+
+    // 只有在這次 Flush 剛開始時才記錄排序時間，避免重複刷新順序。
+    if (game.flushPauseMs <= 0) {
+        flushBannerStartMs = visualAnimMs;
+    }
 
     const before = game.buffer;
     game.buffer = clamp(game.buffer - FLUSH_BUFFER_REDUCE, 0, 100);
@@ -295,6 +303,14 @@ function endGame() {
 
     game.running = false;
     game.pending = null;
+    screenShakeMs = 0;
+    screenShakeIntensity = 0;
+    effectParticles = [];
+    // 死亡時改用專用雙震效果，避免沿用一般粒子震動
+    deathShakeMs = DEATH_SHAKE_DURATION_MS;
+    slowMoTimerMs = 0;
+    flushBannerStartMs = null;
+    freezeBannerStartMs = null;
     player.triggerDeath();
     queueScoreForLeaderboard(game.score);
 
@@ -328,18 +344,18 @@ function endGame() {
                 <span>處理: <strong style="color:#fff">${game.handled}</strong></span>
                 <span>吸收: <strong style="color:#fff">${game.absorbed}</strong></span>
                 <span>丟棄: <strong style="color:#fff">${game.discarded}</strong></span>
-                <span>自動: <strong style="color:#fff">${game.autoAbsorbed}</strong></span>
-                <span>技能: <strong style="color:#fff">${game.flushes}</strong></span>
+                <span>自動吸收: <strong style="color:#fff">${game.autoAbsorbed}</strong></span>
+                <span>flush次數: <strong style="color:#fff">${game.flushes}</strong></span>
             </div>
         `;
-        
+
         // 2. 直接建立圖表容器與畫布 (不再用 getElementById 抓取，避免 DOM 延遲錯誤)
         const chartsContainer = document.createElement('div');
         chartsContainer.style.display = 'flex';
         chartsContainer.style.gap = '12px';
         chartsContainer.style.marginTop = '16px';
         chartsContainer.style.width = '100%';
-        
+
         // 左側：壓力波動圖
         const lineCanvas = document.createElement('canvas');
         lineCanvas.className = 'game-over-canvas';
@@ -361,7 +377,7 @@ function endGame() {
 
         // 3. 直接傳入剛建立的 lineCanvas 與 radarCanvas 變數給繪圖函式，保證 100% 成功！
         drawGameOverChart(lineCanvas, game.history);
-        drawTypeRadarChart(radarCanvas, game.typeStats); 
+        drawTypeRadarChart(radarCanvas, game.typeStats);
 
         ui.gameOverPanel.classList.remove("hidden");
     }, DEATH_FRAME_SWITCH_MS * 2);
@@ -440,11 +456,17 @@ function updateDrops(dt) {
         if (rectsOverlap(player, drop)) {
             // --- 新增：攔截技能球，自動觸發 ---
             if (drop.typeKey === "skill_freeze") {
-                slowMoTimerMs = 4000; // 發動 4 秒的緩速
-                
+                // 冰凍狀態第一次啟動時記錄排序時間，供左上提示佇列使用
+                if (slowMoTimerMs <= 0) {
+                    freezeBannerStartMs = visualAnimMs;
+                }
+
+                // 吃到冰凍技能球後，啟動固定秒數的緩速狀態
+                slowMoTimerMs = SLOW_MO_DURATION_MS;
+
                 // 觸發冰藍色粒子爆炸特效
-                triggerJuice(drop.x + drop.w / 2, drop.y + drop.h / 2, "#32d6ff", 40, 5, 150); 
-                
+                triggerJuice(drop.x + drop.w / 2, drop.y + drop.h / 2, "#32d6ff", 40, 5, 150);
+
                 drop.active = false; // 吃掉後消失
                 return; // ⚠️ 關鍵：直接結束這次迴圈，不會執行下方的 catchDrop
             }

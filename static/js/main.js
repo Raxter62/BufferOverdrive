@@ -1,6 +1,8 @@
 /*
  * main.js
- * 這份檔案負責：遊戲共用常數與狀態、API/排行榜、初始化流程、場景切換、主迴圈與按鍵綁定
+ * 遊戲主控檔。
+ * 負責全域常數、DOM 綁定、資源載入、排行榜、場景切換與主迴圈
+ * 玩法規則拆在 gameplay.js，畫面繪製拆在 render.js
  */
 
 // 遊戲畫面尺寸、操作節奏與核心數值設定
@@ -24,6 +26,8 @@ const ENDLESS_STAGE_THRESHOLDS = [1000, 2500, 5000, 8500]; // 擊敗 Boss 後的
 const ENDLESS_BANNER_DURATION_MS = 1600; // 進入 Endless 時的提示動畫時長
 const MAP_SWAP_SCORE_STEP = 800; // 分數每達到此數值時觸發地圖切換
 const MAP_SWAP_TELEGRAPH_MS = 3000; // 地圖切換前的預告時間
+const SLOW_MO_DURATION_MS = 4000; // Freeze 技能的緩速持續時間
+const DEATH_SHAKE_DURATION_MS = 260; // 死亡時螢幕震動時間
 const ARCADE_FONT_FAMILY = "'Press Start 2P', 'VT323', 'Courier New', 'Noto Sans TC', monospace";
 const START_FRAME_ORDER = [1, 2, 3, 4, 5, 4, 3, 2, 1]; // 開始畫面的切圖順序
 const START_FRAME_INTERVAL_MS = 120; // 開始畫面的切圖間距
@@ -33,7 +37,7 @@ const LEADERBOARD_STORAGE_KEY = "bufferOverdrive.leaderboard.v1"; // 保留給�
 const LEADERBOARD_LIMIT = 5;
 const SCORE_DIGITS = 6;
 
-// 遊戲目前可能處於的場景階段
+// 遊戲場景狀態。
 const SCENES = {
     INTRO: "intro",
     GUIDE: "guide",
@@ -50,7 +54,7 @@ const IMAGE_PATHS = {
     arcadeStick: "/static/player_image/object/sti.png",
     dropData: "/static/player_image/object/drop_data.png",
     platform: "/static/player_image/background/platform.png",
-    state: "/static/player_image/player/skills_icon.png", // 保留給舊版狀態圖示用途
+    state: "/static/player_image/player/skills_icon.png",
     combo1: "/static/player_image/object/combo/1.png",
     combo2: "/static/player_image/object/combo/2.png",
     combo3: "/static/player_image/object/combo/3.png",
@@ -84,7 +88,8 @@ const SPRITE_CONFIG = {
     skillIcons: {
         dash: [{ x: 0, y: 128, w: 256, h: 320 }],
         flush: [{ x: 496, y: 128, w: 256, h: 320 }],
-        risk: [{ x: 256, y: 576, w: 256, h: 320 }]
+        risk: [{ x: 256, y: 576, w: 256, h: 320 }],
+        freeze: [{ x: 0, y: 576, w: 256, h: 320 }]
     },
     drops: [
         { x: 0, y: 0, w: 16, h: 16 },
@@ -103,12 +108,12 @@ const SPRITE_CONFIG = {
     },
     arcadeButtons: {
         a: {
-            target: { left: 450, top: 820 }, // A 鍵在街機外框上的顯示位置
+            target: { left: 450, top: 820 }, // A 鍵在街機面板上的繪製位置。
             up: [{ x: 22, y: 13, w: 81, h: 117 }],
             down: [{ x: 22, y: 182, w: 81, h: 117 }]
         },
         b: {
-            target: { left: 566, top: 820 }, // B 鍵在街機外框上的顯示位置
+            target: { left: 566, top: 820 }, // B 鍵在街機面板上的繪製位置。
             up: [{ x: 142, y: 13, w: 81, h: 111 }],
             down: [{ x: 142, y: 182, w: 81, h: 111 }]
         },
@@ -139,7 +144,8 @@ const SPRITE_CONFIG = {
     }
 };
 
-// 各資料類型的分數、Buffer 影響、顏色與提示文字
+// 各類資料封包的數值設定：
+// 這些資料會被 gameplay.js 用來計算分數與 Buffer，也會被 render.js 顯示在 HUD。
 const DATA_TYPES = {
     clean: {
         label: "Clean Data",
@@ -148,7 +154,7 @@ const DATA_TYPES = {
         sprite: 0,
         color: "#66e28c",
         weight: 30,
-        note: "標準可用資料，分數穩定，適合優先吸收。"
+        note: "穩定、安全的資料封包，適合優先吸收。"
     },
     compressed: {
         label: "Compressed Data",
@@ -157,7 +163,7 @@ const DATA_TYPES = {
         sprite: 1,
         color: "#32d6ff",
         weight: 24,
-        note: "體積小、Buffer 壓力低，適合補分與控場。"
+        note: "體積較小，Buffer 壓力低，適合維持節奏。"
     },
     junk: {
         label: "Junk Data",
@@ -175,7 +181,7 @@ const DATA_TYPES = {
         sprite: 3,
         color: "#ff5c7c",
         weight: 12,
-        note: "高分但風險也高，適合在局勢穩定時處理。"
+        note: "高風險高報酬資料，分數高但壓力也很大。"
     },
     heavy: {
         label: "Heavy Data",
@@ -184,8 +190,9 @@ const DATA_TYPES = {
         sprite: 4,
         color: "#ffd166",
         weight: 10,
-        note: "分數很高，但會大幅推升 Buffer 壓力。"
+        note: "大型資料封包，分數可觀，但會大幅增加 Buffer。"
     },
+    /*
     key: {
         label: "Key Packet",
         score: 0,
@@ -193,11 +200,12 @@ const DATA_TYPES = {
         sprite: 4,
         color: "#8f7cff",
         weight: 4,
-        note: "特殊封包，本身沒有分數，但會干擾節奏並增加壓力。"
+        note: "保留中的特殊封包設定，目前未啟用。"
     }
+    */
 };
 
-// 持續按住中的按鍵狀態
+// 按鍵持續按住狀態。
 const keys = {
     left: false,
     right: false,
@@ -207,7 +215,7 @@ const keys = {
     discard: false
 };
 
-// 只在當前 frame 內有效一次的按鍵狀態
+// 單幀觸發型輸入狀態，避免長按時每幀都重複觸發。
 const justPressed = {
     jump: false,
     dash: false,
@@ -215,7 +223,7 @@ const justPressed = {
     discard: false
 };
 
-// 丟棄長按判定、素材載入狀態與圖片快取
+// 載入與輸入控制相關的全域狀態。
 let discardHoldMs = 0;
 let discardUsedFlush = false;
 let imagesLoaded = false;
@@ -226,7 +234,7 @@ const canvas = document.getElementById("gameCanvas");
 const ctx = canvas.getContext("2d");
 ctx.imageSmoothingEnabled = false;
 
-// 右側 HUD、結算面板與街機外框控制元件的 DOM 參照
+// HUD 與操作面板需要用到的 DOM 節點。
 const ui = {
     score: document.getElementById("scoreValue"),
     bestScore: document.getElementById("bestScoreValue"),
@@ -277,10 +285,16 @@ let pendingLeaderboardEntry = null;
 let screenShakeMs = 0;
 let screenShakeIntensity = 0;
 let effectParticles = [];
-// ----------------------------
+let deathShakeMs = 0;
 let slowMoTimerMs = 0;
+let flushBannerStartMs = null;
+let freezeBannerStartMs = null;
+let executionBannerPositions = {
+    flush: 105,
+    freeze: 105
+};
 
-// 從一組 frame 陣列中安全取出第一格設定
+// 從一組 frame 設定中安全取出第一格。
 function getSpriteFrame(frames) {
     return Array.isArray(frames) && frames.length > 0 ? frames[0] : null;
 }
@@ -627,6 +641,15 @@ async function resetGame() {
     flushDropsData = null;
     nextMapData = null;
     displayedScore = 0;
+    screenShakeMs = 0;
+    screenShakeIntensity = 0;
+    effectParticles = [];
+    deathShakeMs = 0;
+    slowMoTimerMs = 0;
+    flushBannerStartMs = null;
+    freezeBannerStartMs = null;
+    executionBannerPositions.flush = 105;
+    executionBannerPositions.freeze = 105;
     discardHoldMs = 0;
     discardUsedFlush = false;
     visualAnimMs = 0;
@@ -695,6 +718,11 @@ function gameLoop(time) {
     }
 
     // 正式遊戲進行中的更新流程
+    // 死亡震動屬於 Game Over 過場效果，因此不受 game.running 限制
+    if (deathShakeMs > 0) {
+        deathShakeMs = Math.max(0, deathShakeMs - dt);
+    }
+
     if (game?.running) {
         game.elapsedMs += dt;
         game.flushCooldownMs = Math.max(0, game.flushCooldownMs - dt);
