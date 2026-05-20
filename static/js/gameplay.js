@@ -149,7 +149,8 @@ function absorbPending(reason = "manual") {
     if (!game.pending) return;
 
     const typeKey = game.pending.typeKey;
-    const data = DATA_TYPES[typeKey];
+    const data = getDataTypeConfig(typeKey);
+    ensureTypeStatsEntry(typeKey);
 
     const oldCombo = game.combo || 0;
     game.combo = oldCombo + 1;
@@ -207,7 +208,8 @@ function discardPending() {
     if (!game.pending) return;
 
     const typeKey = game.pending.typeKey;
-    const data = DATA_TYPES[typeKey]; // 取出資料屬性以取得顏色。
+    const data = getDataTypeConfig(typeKey); // 取出資料屬性以取得顏色。
+    ensureTypeStatsEntry(typeKey);
     throwPendingDrop(typeKey);
 
     // 丟棄時仍保留輕量的視覺回饋。

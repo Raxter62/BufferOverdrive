@@ -177,7 +177,7 @@ def get_boss_burst_drops():
         # 不同階段使用不同的噴發軌跡
         if phase == "STORM":
             # 扇形噴發
-            angle = (i / count) * math.PI
+            angle = (i / count) * math.pi
             vx = math.cos(angle) * 6
             vy = math.sin(angle) * 4 + 2
         elif phase == "CHAOS":

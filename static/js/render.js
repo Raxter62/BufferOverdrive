@@ -227,7 +227,7 @@ function updateHud() {
     ui.discarded.textContent = game.discarded.toString();
 
     if (game.pending) {
-        const data = DATA_TYPES[game.pending.typeKey];
+        const data = getDataTypeConfig(game.pending.typeKey);
         const remaining = clamp(DECISION_TIME_MS - game.pending.elapsedMs, 0, DECISION_TIME_MS);
         ui.packetName.textContent = data.label;
         ui.packetName.style.color = data.color;
@@ -375,7 +375,7 @@ function drawMapTransition(context) {
 function drawPendingPulse(context) {
     if (!game.pending || player?.dead) return;
 
-    const data = DATA_TYPES[game.pending.typeKey];
+    const data = getDataTypeConfig(game.pending.typeKey);
     const remaining = clamp(DECISION_TIME_MS - game.pending.elapsedMs, 0, DECISION_TIME_MS);
     const pulse = 0.55 + Math.sin(globalAnimTimer * 0.25) * 0.15;
 

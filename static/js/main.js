@@ -206,6 +206,32 @@ const DATA_TYPES = {
 };
 
 // 按鍵持續按住狀態。
+DATA_TYPES.key = {
+    label: "Key Packet",
+    score: 0,
+    buffer: 15,
+    sprite: 4,
+    color: "#8f7cff",
+    weight: 4,
+    note: "Special packet that boosts buffer control."
+};
+
+const DEFAULT_DATA_TYPE_KEY = "clean";
+
+function getDataTypeConfig(typeKey) {
+    return DATA_TYPES[typeKey] ?? DATA_TYPES[DEFAULT_DATA_TYPE_KEY];
+}
+
+function ensureTypeStatsEntry(typeKey) {
+    if (!game?.typeStats || game.typeStats[typeKey]) return;
+
+    game.typeStats[typeKey] = {
+        absorbed: 0,
+        discarded: 0,
+        buffer: 0
+    };
+}
+
 const keys = {
     left: false,
     right: false,

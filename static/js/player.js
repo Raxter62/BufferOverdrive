@@ -80,7 +80,7 @@ class DropData {
             return;
         }
 
-        const data = DATA_TYPES[this.typeKey];
+        const data = getDataTypeConfig(this.typeKey);
         drawDropIcon(context, data.sprite, this.x, this.y, this.w, this.h);
 
         // Flush 與丟棄形成的拋物線封包外圈會加上提示光環。
@@ -271,7 +271,7 @@ class Player {
 
         // 玩家頭上會顯示目前正在等待決策的資料
         if (game.pending && !this.dead) {
-            const data = DATA_TYPES[game.pending.typeKey];
+            const data = getDataTypeConfig(game.pending.typeKey);
             drawDropIcon(context, data.sprite, this.x + this.w / 2 - 14, this.y - 34, 28, 28);
         }
     }
