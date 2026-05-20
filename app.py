@@ -4,6 +4,8 @@ import random
 import math
 from flask import Flask, render_template, request, jsonify
 
+from llm_service import generate_boss_taunt, is_llm_available
+
 # Flask 應用程式實例
 app = Flask(__name__)
 
@@ -203,6 +205,42 @@ def spawn_boss():
         "max_hp": BOSS_STATS["max_hp"]
     })
 
+
+@app.route('/api/boss/taunt', methods=['POST'])
+def boss_taunt():
+    """
+    Boss 即時台詞 API。
+    請求格式：
+      {
+        "tone": "taunt" | "praise",
+        "context": {
+          "bossPhase": "STORM" | "CHAOS" | "DESPERATE",
+          "bossHpPercent": 0.0-1.0,
+          "playerScore": number,
+          "buffer": 0-100,
+          "combo": number,
+          "recentEvent": "timed" | "phase_change" | "flush" | "buffer_threshold" | "combo_milestone"
+        }
+      }
+    回應：
+      成功 -> { "reply": "...（不超過20字）" }
+      失敗／逾時／超字／LLM 未啟用 -> { "reply": "" }（前端不顯示）
+    """
+    data = request.get_json(silent=True) or {}
+    tone = data.get("tone", "taunt")
+    context = data.get("context") or {}
+
+    reply = generate_boss_taunt(context, tone)
+    if not reply:
+        return jsonify({"reply": ""})
+    return jsonify({"reply": reply})
+
+
+@app.route('/api/llm/status')
+def llm_status_route():
+    """提供前端 debug 用：檢查 LLM 是否已正確設定。"""
+    return jsonify({"available": is_llm_available()})
+
 # 排行榜與單場紀錄目前都先存成本地檔案
 LEADERBOARD_FILE = "leaderboard.json"
 GAME_LOGS_FILE = "game_logs.jsonl"
@@ -332,4 +370,4 @@ def log_event():
     return jsonify({"status": "ok"})
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+    app.run(debug=True, port=5002)

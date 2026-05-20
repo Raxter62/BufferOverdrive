@@ -156,6 +156,7 @@ function absorbPending(reason = "manual") {
     if (oldCombo < 2 && game.combo >= 2) {
         game.comboAppearMs = visualAnimMs;
     }
+    notifyBossTauntCombo(game.combo);
 
     // 1. 計算既有的 Combo 倍率計算最終得分
     const comboMultiplier = 1 + 0.1 * game.combo;
@@ -167,6 +168,7 @@ function absorbPending(reason = "manual") {
 
     game.score += finalScore;
     game.buffer = clamp(game.buffer + data.buffer, 0, 100);
+    notifyBossTauntBuffer(game.buffer);
     game.absorbed += 1;
     game.handled += 1;
     game.typeStats[typeKey].absorbed += 1;
@@ -278,6 +280,7 @@ function triggerFlush() {
         flushDropsData = data;
     });
     recordEvent("flush", null, { before, after: game.buffer });
+    notifyBossTauntFlush();
 }
 
 // 進入 Endless 模式，降低當前 Buffer 並切換階段
@@ -303,6 +306,7 @@ function endGame() {
 
     game.running = false;
     game.pending = null;
+    cancelBossTaunts("game-over");
     screenShakeMs = 0;
     screenShakeIntensity = 0;
     effectParticles = [];

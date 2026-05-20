@@ -1,2 +1,6 @@
 __pycache__/
 *.py[cod]
+
+# 本機 LLM 設定（含 API key），不可上傳
+config.ini
+

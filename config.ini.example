@@ -1,0 +1,5 @@
+; LLM 設定範例：請複製為 config.ini 後填入自己的 API Key
+; 申請位置：https://aistudio.google.com/app/apikey
+[Gemini]
+API_KEY = YOUR_GEMINI_API_KEY_HERE
+MODEL = gemini-3-flash-preview

@@ -21,8 +21,20 @@ const IDLE_FRAME_INTERVAL_MS = 400; // 待機狀態的切圖間距
 const SKILL_FRAME_INTERVAL_MS = 300; // 技能狀態的切圖間距
 const RESPAWN_INVINCIBLE_MS = 1000; // 角色復活後的無敵時間
 const DEATH_FRAME_SWITCH_MS = 2000; // 角色死亡後切換下一幀的時間
-const BOSS_TRIGGER_SCORE = 5000; // 分數達標後觸發 Boss
+const BOSS_TRIGGER_SCORE = 500; //5000 分數達標後觸發 Boss
 const ENDLESS_STAGE_THRESHOLDS = [1000, 2500, 5000, 8500]; // 擊敗 Boss 後的 Endless 節奏門檻
+
+// --- Boss 即時台詞（LLM）相關常數 ---
+const BOSS_TAUNT_COOLDOWN_MS = 15000;        // 兩則台詞之間的冷卻（從上一則顯示結束起算）
+const BOSS_TAUNT_TIMED_MIN_MS = 25000;       // 定時觸發最小間隔
+const BOSS_TAUNT_TIMED_MAX_MS = 40000;       // 定時觸發最大間隔
+const BOSS_TAUNT_DISPLAY_MS = 6000;          // 對話框顯示時間
+const BOSS_TAUNT_LLM_TIMEOUT_MS = 600000;     // LLM 逾時（不算冷卻）
+const BOSS_TAUNT_MAX_CHARS = 20;             // 台詞上限字數（後端也會擋一次）
+const BOSS_TAUNT_BUFFER_HIGH = 70;           // 高 Buffer 判定 → tone = taunt
+const BOSS_TAUNT_COMBO_HIGH = 5;             // 高 Combo 判定 → tone = praise
+const BOSS_TAUNT_BUFFER_TRIGGERS = [70, 90]; // 首次跨越這些 Buffer 值會觸發
+const BOSS_TAUNT_COMBO_TRIGGERS = [5, 10];   // 首次達到這些 Combo 會觸發
 const ENDLESS_BANNER_DURATION_MS = 1600; // 進入 Endless 時的提示動畫時長
 const MAP_SWAP_SCORE_STEP = 800; // 分數每達到此數值時觸發地圖切換
 const MAP_SWAP_TELEGRAPH_MS = 3000; // 地圖切換前的預告時間
@@ -567,6 +579,7 @@ function createGameState() {
         bossTriggered: false, // 是否已經觸發過 Boss 登場
         bossDefeated: false,
         boss: null, // 當前 Boss 的前端同步狀態
+        bossTaunt: createBossTauntState(), // Boss 即時台詞狀態機
         endlessStartScore: null,
         endlessBannerStartMs: null,
         nextMapSwapScore: MAP_SWAP_SCORE_STEP,
@@ -726,6 +739,7 @@ function gameLoop(time) {
     if (game?.running) {
         game.elapsedMs += dt;
         game.flushCooldownMs = Math.max(0, game.flushCooldownMs - dt);
+        updateBossTaunt(dt);
         if (screenShakeMs > 0) {
             screenShakeMs -= dt;
         }

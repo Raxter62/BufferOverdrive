@@ -81,6 +81,12 @@ class DropData {
         }
 
         const data = DATA_TYPES[this.typeKey];
+        if (!data) {
+            // 後端可能丟出前端尚未定義的類型（例如未實作的技能球）
+            // 將此封包標記為無效，避免每幀都嘗試繪製造成 game loop crash
+            this.active = false;
+            return;
+        }
         drawDropIcon(context, data.sprite, this.x, this.y, this.w, this.h);
 
         // Flush 與丟棄形成的拋物線封包外圈會加上提示光環。
