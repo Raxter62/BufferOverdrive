@@ -118,7 +118,7 @@ DATA_TYPES = {
     "junk": {"weight": 18},
     "virus": {"weight": 12},
     "heavy": {"weight": 10},
-    "key": {"weight": 4},
+    # "key": {"weight": 0},
     "skill_freeze": {"weight": 0}
 }
 
