@@ -8,7 +8,11 @@
 // 遊戲畫面尺寸、操作節奏與核心數值設定
 const GAME_WIDTH = 640;
 const GAME_HEIGHT = 480;
-const DECISION_TIME_MS = 1500;
+const BOSS_BURST_PREP_MS = 2000; // Boss burstdata技能 前置時間
+const BOSS_BURST_ACTIVE_MS = 3000; // Boss burstdata技能發動後 持續時間
+const BOSS_IDLE_FRAME_INTERVAL_MS = 350; // Boss 待機動畫的時間間隔
+const BOSS_SKILL_FRAME_INTERVAL_MS = 500; // Boss 技能動畫的時間間隔
+const DECISION_TIME_MS = 1500; // 玩家做出吸收/丟棄決定的時間限制
 const FLUSH_HOLD_MS = 650; // Flush 需要按住的時間
 const FLUSH_PAUSE_MS = 1100; // Flush 後的暫停時間
 const FLUSH_BUFFER_REDUCE = 25; // Flush 後減少的 Buffer
@@ -21,7 +25,7 @@ const IDLE_FRAME_INTERVAL_MS = 400; // 待機狀態的切圖間距
 const SKILL_FRAME_INTERVAL_MS = 300; // 技能狀態的切圖間距
 const RESPAWN_INVINCIBLE_MS = 1000; // 角色復活後的無敵時間
 const DEATH_FRAME_SWITCH_MS = 2000; // 角色死亡後切換下一幀的時間
-const BOSS_TRIGGER_SCORE = 500; //5000 分數達標後觸發 Boss
+const BOSS_TRIGGER_SCORE = 500; //分數達標後觸發 Boss
 const ENDLESS_STAGE_THRESHOLDS = [1000, 2500, 5000, 8500]; // 擊敗 Boss 後的 Endless 節奏門檻
 
 // --- Boss 即時台詞（LLM）相關常數 ---
@@ -29,9 +33,9 @@ const BOSS_TAUNT_COOLDOWN_MS = 15000;        // 兩則台詞之間的冷卻（�
 const BOSS_TAUNT_TIMED_MIN_MS = 25000;       // 定時觸發最小間隔
 const BOSS_TAUNT_TIMED_MAX_MS = 40000;       // 定時觸發最大間隔
 const BOSS_TAUNT_DISPLAY_MS = 6000;          // 對話框顯示時間
-const BOSS_TAUNT_LLM_TIMEOUT_MS = 600000;     // LLM 逾時（不算冷卻）
-const BOSS_TAUNT_MAX_CHARS = 20;             // 台詞上限字數（後端也會擋一次）
-const BOSS_TAUNT_BUFFER_HIGH = 70;           // 高 Buffer 判定 → tone = taunt
+const BOSS_TAUNT_LLM_TIMEOUT_MS = 10000;      // LLM 逾時（不算冷卻）
+const BOSS_TAUNT_MAX_CHARS = 25;             // 台詞上限字數（後端也會擋一次）
+const BOSS_TAUNT_BUFFER_HIGH = 65;           // 高 Buffer 判定 → tone = taunt
 const BOSS_TAUNT_COMBO_HIGH = 5;             // 高 Combo 判定 → tone = praise
 const BOSS_TAUNT_BUFFER_TRIGGERS = [70, 90]; // 首次跨越這些 Buffer 值會觸發
 const BOSS_TAUNT_COMBO_TRIGGERS = [5, 10];   // 首次達到這些 Combo 會觸發
@@ -40,14 +44,14 @@ const MAP_SWAP_SCORE_STEP = 800; // 分數每達到此數值時觸發地圖切�
 const MAP_SWAP_TELEGRAPH_MS = 3000; // 地圖切換前的預告時間
 const SLOW_MO_DURATION_MS = 4000; // Freeze 技能的緩速持續時間
 const DEATH_SHAKE_DURATION_MS = 260; // 死亡時螢幕震動時間
-const ARCADE_FONT_FAMILY = "'Press Start 2P', 'VT323', 'Courier New', 'Noto Sans TC', monospace";
+const ARCADE_FONT_FAMILY = "'Press Start 2P', 'VT323', 'Courier New', 'Noto Sans TC', monospace"; // Canvas 使用的街機字體候選順序
 const START_FRAME_ORDER = [1, 2, 3, 4, 5, 4, 3, 2, 1]; // 開始畫面的切圖順序
 const START_FRAME_INTERVAL_MS = 120; // 開始畫面的切圖間距
 const TRASH_ZONE = { x: 0, y: 448, w: GAME_WIDTH, h: 32 }; // 垃圾資料存在區域
-const INITIAL_MAP_INDEX = 1;
+const INITIAL_MAP_INDEX = 1; // 遊戲開場固定載入的地圖索引
 const LEADERBOARD_STORAGE_KEY = "bufferOverdrive.leaderboard.v1"; // 保留給舊版本機排行榜用，目前未啟用
-const LEADERBOARD_LIMIT = 5;
-const SCORE_DIGITS = 6;
+const LEADERBOARD_LIMIT = 5; // 排行榜最多顯示的分數筆數
+const SCORE_DIGITS = 6; // 主分數區塊固定顯示的位數
 
 // 遊戲場景狀態。
 const SCENES = {
@@ -72,6 +76,7 @@ const IMAGE_PATHS = {
     combo3: "/static/player_image/object/combo/3.png",
     combo4: "/static/player_image/object/combo/4.png",
     combo5: "/static/player_image/object/combo/5.png",
+    boss: "/static/player_image/boss/WebBoss.png",
 };
 
 // 各種角色、平台、掉落物與街機外框的 Sprite Sheet 切圖設定
@@ -153,6 +158,30 @@ const SPRITE_CONFIG = {
             target: { left: 200, top: 755 },
             frames: [{ x: 110, y: 520, w: 140, h: 180 }]
         }
+    },
+    boss: {
+        draw: { w: 208, h: 208 }, 
+        hpBar: { yOffset: 16, w: 164, h: 10 },// 血條相對於角色圖的偏移與尺寸
+        idleLoop: [
+            { x: 0, y: 256, w: 128, h: 128 },
+            { x: 128, y: 256, w: 128, h: 128 },
+            { x: 256, y: 256, w: 128, h: 128 },
+            { x: 384, y: 256, w: 128, h: 128 }
+        ],
+        reverseLoop: [
+            { x: 0, y: 128, w: 128, h: 128 },
+            { x: 128, y: 128, w: 128, h: 128 },
+            { x: 256, y: 128, w: 128, h: 128 },
+            { x: 384, y: 128, w: 128, h: 128 }
+        ],
+        burstCast: {
+            prep: { x: 0, y: 384, w: 128, h: 128 },
+            loop: [
+                { x: 128, y: 384, w: 128, h: 128 },
+                { x: 256, y: 384, w: 128, h: 128 },
+                { x: 384, y: 384, w: 128, h: 128 }
+            ]
+        }
     }
 };
 
@@ -219,6 +248,16 @@ const DATA_TYPES = {
 
 // 按鍵持續按住狀態。
 const keys = {
+    left: false,
+    right: false,
+    jump: false,
+    dash: false,
+    absorb: false,
+    discard: false
+};
+
+// 原始實體按鍵狀態，讓 Boss 反轉控制時仍能重新映射操作方向。
+const physicalKeys = {
     left: false,
     right: false,
     jump: false,
@@ -303,7 +342,9 @@ let flushBannerStartMs = null;
 let freezeBannerStartMs = null;
 let executionBannerPositions = {
     flush: 105,
-    freeze: 105
+    freeze: 105,
+    reverse: 105,
+    warning: 105
 };
 
 // 從一組 frame 設定中安全取出第一格。
@@ -580,6 +621,7 @@ function createGameState() {
         bossDefeated: false,
         boss: null, // 當前 Boss 的前端同步狀態
         bossTaunt: createBossTauntState(), // Boss 即時台詞狀態機
+        bossSkill: createBossSkillState(),
         endlessStartScore: null,
         endlessBannerStartMs: null,
         nextMapSwapScore: MAP_SWAP_SCORE_STEP,
@@ -630,6 +672,56 @@ function randomBetween(min, max) {
     return min + Math.random() * (max - min);
 }
 
+// 判斷 Boss 反轉控制技能是否仍在生效。
+function isBossControlsReversed() {
+    return !!(game?.bossSkill?.reverseControlsMs > 0);
+}
+
+// 將實體按鍵狀態轉成遊戲邏輯輸入，必要時套用反轉控制。
+function syncLogicalKeys({ allowJustPressed = false } = {}) {
+    const reverseControls = isBossControlsReversed();
+    const nextKeys = {
+        left: reverseControls ? physicalKeys.right : physicalKeys.left,
+        right: reverseControls ? physicalKeys.left : physicalKeys.right,
+        jump: physicalKeys.jump,
+        dash: physicalKeys.dash,
+        absorb: reverseControls ? physicalKeys.discard : physicalKeys.absorb,
+        discard: reverseControls ? physicalKeys.absorb : physicalKeys.discard
+    };
+
+    if (allowJustPressed) {
+        if (nextKeys.jump && !keys.jump) justPressed.jump = true;
+        if (nextKeys.dash && !keys.dash) justPressed.dash = true;
+        if (nextKeys.absorb && !keys.absorb) justPressed.absorb = true;
+
+        if (nextKeys.discard && !keys.discard) {
+            discardHoldMs = 0;
+            discardUsedFlush = false;
+        }
+
+        if (!nextKeys.discard && keys.discard && !discardUsedFlush && discardHoldMs < FLUSH_HOLD_MS) {
+            justPressed.discard = true;
+        }
+    }
+
+    Object.assign(keys, nextKeys);
+}
+
+// 清空所有輸入狀態，避免切場景或重開後沿用上一幀按鍵。
+function resetInputState() {
+    Object.keys(physicalKeys).forEach((key) => {
+        physicalKeys[key] = false;
+    });
+    Object.keys(keys).forEach((key) => {
+        keys[key] = false;
+    });
+    Object.keys(justPressed).forEach((key) => {
+        justPressed[key] = false;
+    });
+    discardHoldMs = 0;
+    discardUsedFlush = false;
+}
+
 // 設定 Canvas 使用的街機風字體
 function setArcadeFont(context, sizePx, weight = 700) {
     context.font = `${weight} ${sizePx}px ${ARCADE_FONT_FAMILY}`;
@@ -646,6 +738,7 @@ async function resetGame() {
 
     const initialMap = await chooseInitialMap();
     game = createGameState();
+    resetInputState();
     currentMapIndex = initialMap?.index ?? INITIAL_MAP_INDEX;
     player = new Player();
     platforms = initialMap ? buildPlatforms(initialMap.map.mapArray) : [];
@@ -663,8 +756,8 @@ async function resetGame() {
     freezeBannerStartMs = null;
     executionBannerPositions.flush = 105;
     executionBannerPositions.freeze = 105;
-    discardHoldMs = 0;
-    discardUsedFlush = false;
+    executionBannerPositions.reverse = 105;
+    executionBannerPositions.warning = 105;
     visualAnimMs = 0;
     ui.gameOverPanel.classList.add("hidden");
 
@@ -740,6 +833,7 @@ function gameLoop(time) {
         game.elapsedMs += dt;
         game.flushCooldownMs = Math.max(0, game.flushCooldownMs - dt);
         updateBossTaunt(dt);
+        updateBossSkills(dt);
         if (screenShakeMs > 0) {
             screenShakeMs -= dt;
         }
@@ -787,36 +881,14 @@ function setKey(code, pressed, browserEvent) {
         browserEvent.preventDefault();
     }
 
-    if (code === "KeyA" || code === "ArrowLeft") keys.left = pressed;
-    if (code === "KeyD" || code === "ArrowRight") keys.right = pressed;
+    if (code === "KeyA" || code === "ArrowLeft") physicalKeys.left = pressed;
+    if (code === "KeyD" || code === "ArrowRight") physicalKeys.right = pressed;
+    if (code === "Space") physicalKeys.jump = pressed;
+    if (code === "ShiftLeft" || code === "ShiftRight") physicalKeys.dash = pressed;
+    if (code === "KeyJ") physicalKeys.absorb = pressed;
+    if (code === "KeyK") physicalKeys.discard = pressed;
 
-    if (code === "Space") {
-        if (pressed && !keys.jump) justPressed.jump = true;
-        keys.jump = pressed;
-    }
-
-    if (code === "ShiftLeft" || code === "ShiftRight") {
-        if (pressed && !keys.dash) justPressed.dash = true;
-        keys.dash = pressed;
-    }
-
-    if (code === "KeyJ") {
-        if (pressed && !keys.absorb) justPressed.absorb = true;
-        keys.absorb = pressed;
-    }
-
-    if (code === "KeyK") {
-        if (pressed && !keys.discard) {
-            discardHoldMs = 0;
-            discardUsedFlush = false;
-        }
-
-        if (!pressed && keys.discard && !discardUsedFlush && discardHoldMs < FLUSH_HOLD_MS) {
-            justPressed.discard = true;
-        }
-
-        keys.discard = pressed;
-    }
+    syncLogicalKeys({ allowJustPressed: true });
 }
 
 // 註冊鍵盤、離頁與重新開始按鈕事件

@@ -2,4 +2,4 @@
 ; 申請位置：https://aistudio.google.com/app/apikey
 [Gemini]
 API_KEY = YOUR_GEMINI_API_KEY_HERE
-MODEL = gemini-3-flash-preview
+MODEL = gemini-2.5-flash

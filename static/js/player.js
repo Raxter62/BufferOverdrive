@@ -6,6 +6,7 @@
 
 // 掉落資料物件：負責移動、存在狀態與自身繪製
 class DropData {
+    // 建立掉落資料物件，並套用速度、碰撞與渲染層預設值。
     constructor(x, y, typeKey = chooseDataType(), options = {}) {
         // 掉落物的基本位置、尺寸與類型
         this.x = x;
@@ -22,6 +23,7 @@ class DropData {
         this.fromDiscard = options.fromDiscard ?? false;
         this.canCollide = options.canCollide ?? true;
         this.noGravityMs = Math.max(0, options.noGravityMs ?? 0);
+        this.renderLayer = options.renderLayer ?? "default";
         this.spin = Math.random() * Math.PI * 2;
     }
 
@@ -105,6 +107,7 @@ class DropData {
 
 // 玩家角色類別：負責移動、跳躍、衝刺、受擊與動畫更新
 class Player {
+    // 建立玩家的碰撞範圍、移動參數與初始動畫狀態。
     constructor() {
         // 玩家初始位置與碰撞尺寸
         this.x = 96; // 玩家重生時的起始 X 座標

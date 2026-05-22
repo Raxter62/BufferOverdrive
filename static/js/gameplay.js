@@ -1,6 +1,7 @@
 /*
  * gameplay.js
- * 這份檔案負責：遊戲規則判定，例如吸收、丟棄、Flush、Endless、Game Over、掉落物生成、風險值與玩家/掉落物/平台之間的互動邏輯
+ * 這份檔案負責：遊戲規則判定，例如吸收、丟棄、Flush、Endless、Game Over 流程、掉落物生成、風險值與玩家/掉落物/平台之間的互動邏輯
+ * Game Over 結算畫面與圖表繪製交給 render.js
  */
 
 // 根據目前風險值，計算危險資料的權重倍率
@@ -266,19 +267,23 @@ function triggerFlush() {
     game.flushCooldownMs = FLUSH_COOLDOWN_MS;
     game.flushRiskLevel += 1;
     const spawned = spawnFlushWave();
+    const refreshFlushDrops = () => fetchFlushDrops().then((data) => {
+        flushDropsData = data;
+        return data;
+    });
 
     if (spawned === 0) {
-        fetchFlushDrops().then((data) => {
-            flushDropsData = data;
-            if (game?.running && game.flushPauseMs > 0) {
-                spawnFlushWave(data);
-            }
-        });
+        refreshFlushDrops()
+            .then((data) => {
+                if (game?.running && game.flushPauseMs > 0) {
+                    spawnFlushWave(data);
+                }
+                return refreshFlushDrops();
+            });
+    } else {
+        refreshFlushDrops();
     }
 
-    fetchFlushDrops().then((data) => {
-        flushDropsData = data;
-    });
     recordEvent("flush", null, { before, after: game.buffer });
     notifyBossTauntFlush();
 }
@@ -300,13 +305,14 @@ function enterEndless() {
     recordEvent("enter-endless", null, { endlessStartScore: game.endlessStartScore });
 }
 
-// 結束遊戲並顯示 Game Over 面板
+// 結束遊戲流程，並安排 Game Over 結算畫面稍後顯示。
 function endGame() {
     if (!game.running) return;
 
     game.running = false;
     game.pending = null;
-    cancelBossTaunts("game-over");
+    cancelBossTaunts();
+    cancelBossSkills();
     screenShakeMs = 0;
     screenShakeIntensity = 0;
     effectParticles = [];
@@ -315,6 +321,8 @@ function endGame() {
     slowMoTimerMs = 0;
     flushBannerStartMs = null;
     freezeBannerStartMs = null;
+    executionBannerPositions.reverse = 105;
+    executionBannerPositions.warning = 105;
     player.triggerDeath();
     queueScoreForLeaderboard(game.score);
 
@@ -338,53 +346,7 @@ function endGame() {
         clearTimeout(gameOverRevealTimer);
     }
 
-    gameOverRevealTimer = setTimeout(() => {
-        // 1. 更新純文字統計部分 (覆蓋並清空先前的內容)
-        ui.finalStats.innerHTML = `
-            <div style="font-size:16px; margin-bottom: 8px; color:var(--text); letter-spacing: 2px;">
-                FINAL SCORE <strong style="color:var(--cyan); font-size:26px;">${game.score}</strong>
-            </div>
-            <div style="font-size:12px; color:var(--muted); display:flex; justify-content:center; gap: 14px; flex-wrap:wrap;">
-                <span>處理: <strong style="color:#fff">${game.handled}</strong></span>
-                <span>吸收: <strong style="color:#fff">${game.absorbed}</strong></span>
-                <span>丟棄: <strong style="color:#fff">${game.discarded}</strong></span>
-                <span>自動吸收: <strong style="color:#fff">${game.autoAbsorbed}</strong></span>
-                <span>flush次數: <strong style="color:#fff">${game.flushes}</strong></span>
-            </div>
-        `;
-
-        // 2. 直接建立圖表容器與畫布 (不再用 getElementById 抓取，避免 DOM 延遲錯誤)
-        const chartsContainer = document.createElement('div');
-        chartsContainer.style.display = 'flex';
-        chartsContainer.style.gap = '12px';
-        chartsContainer.style.marginTop = '16px';
-        chartsContainer.style.width = '100%';
-
-        // 左側：壓力波動圖
-        const lineCanvas = document.createElement('canvas');
-        lineCanvas.className = 'game-over-canvas';
-        lineCanvas.style.flex = "1.8";
-        lineCanvas.width = 540;  // ⚠️ 提高解析度
-        lineCanvas.height = 260; // ⚠️ 提高解析度
-        chartsContainer.appendChild(lineCanvas);
-
-        // 右側：資料比例五角雷達圖
-        const radarCanvas = document.createElement('canvas');
-        radarCanvas.className = 'game-over-canvas';
-        radarCanvas.style.flex = "1.2";
-        radarCanvas.width = 360;  // ⚠️ 提高解析度
-        radarCanvas.height = 260; // ⚠️ 提高解析度
-        chartsContainer.appendChild(radarCanvas);
-
-        // 將容器加入結算面板中
-        ui.finalStats.appendChild(chartsContainer);
-
-        // 3. 直接傳入剛建立的 lineCanvas 與 radarCanvas 變數給繪圖函式，保證 100% 成功！
-        drawGameOverChart(lineCanvas, game.history);
-        drawTypeRadarChart(radarCanvas, game.typeStats);
-
-        ui.gameOverPanel.classList.remove("hidden");
-    }, DEATH_FRAME_SWITCH_MS * 2);
+    gameOverRevealTimer = setTimeout(renderGameOverPanel, DEATH_FRAME_SWITCH_MS * 2);
 }
 
 // 記錄近期遊戲事件，方便後端保存與後續分析
@@ -443,7 +405,7 @@ function updateDrops(dt) {
     if (game.dropSpawnMs <= 0) {
         spawnDrop();
         if (dropsQueue.length === 0) {
-            game.dropSpawnMs = 500; // Fallback if API fails or queue is empty
+            game.dropSpawnMs = 500; // 後端佇列暫時沒有資料時，先用保守間隔等待下一批。
         }
     }
 
@@ -538,23 +500,3 @@ function resolvePlayerPlatforms() {
     }
 }
 
-// --- 新增：觸發打擊感特效 ---
-function triggerJuice(x, y, color, count, shakeIntensity, shakeDuration) {
-    screenShakeIntensity = shakeIntensity;
-    screenShakeMs = shakeDuration;
-
-    for (let i = 0; i < count; i++) {
-        const angle = Math.random() * Math.PI * 2;
-        const speed = Math.random() * 5 + 2; // 粒子噴射速度
-        effectParticles.push({
-            x: x,
-            y: y,
-            vx: Math.cos(angle) * speed,
-            vy: Math.sin(angle) * speed,
-            life: 300 + Math.random() * 300, // 存活時間
-            maxLife: 600,
-            size: Math.random() * 3 + 2, // 粒子大小
-            color: color
-        });
-    }
-}

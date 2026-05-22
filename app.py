@@ -4,7 +4,7 @@ import random
 import math
 from flask import Flask, render_template, request, jsonify
 
-from llm_service import generate_boss_taunt, is_llm_available
+from llm_service import generate_boss_taunt
 
 # Flask 應用程式實例
 app = Flask(__name__)
@@ -131,28 +131,73 @@ BOSS_STATS = {
     "current_hp": 400,
 }
 
-def get_boss_phase():
-    """根據 Boss 剩餘血量計算目前階段。"""
-    hp_percent = BOSS_STATS["current_hp"] / BOSS_STATS["max_hp"]
-    if hp_percent > 0.6:
-        return "STORM"
-    if hp_percent > 0.3:
-        return "CHAOS"
-    return "DESPERATE"
+# Boss 技能設定
+BOSS_SKILL_INTERVAL_MIN_MS = 15000 # 最短 15 秒觸發一次技能
+BOSS_SKILL_INTERVAL_MAX_MS = 40000 # 最長 40 秒觸發一次技能
+BOSS_REVERSE_CONTROLS_DURATION_MS = 8000 # 技能1:反轉控制 持續 8 秒
+BOSS_SKILL_POOL = ("burst_drops", "reverse_controls") # 技能池：噴發掉落、反轉控制
 
-@app.route('/api/boss/status')
-def get_boss_status():
-    """回傳目前 Boss 狀態，供前端同步畫面。"""
-    return jsonify({
-        "active": BOSS_STATS["active"],
-        "hp": BOSS_STATS["current_hp"],
-        "max_hp": BOSS_STATS["max_hp"],
-        "phase": get_boss_phase()
-    })
+
+def roll_boss_skill_interval_ms():
+    """依 Boss 技能冷卻範圍抽出下一次觸發間隔。"""
+    return random.randint(BOSS_SKILL_INTERVAL_MIN_MS, BOSS_SKILL_INTERVAL_MAX_MS)
+
+
+def build_boss_burst_drops():
+    """建立 Boss 噴發技能要送給前端的掉落物資料。"""
+    burst_pattern = random.choice(["fan", "chaos", "slam"])
+    burst_count = 12 if burst_pattern != "slam" else 20
+    drops = []
+
+    for i in range(burst_count):
+        drop_type = choose_data_type("ENDLESS", True, 2.0)
+
+        if burst_pattern == "fan":
+            angle = (i / burst_count) * math.pi
+            vx = math.cos(angle) * 6
+            vy = math.sin(angle) * 4 + 2
+        elif burst_pattern == "chaos":
+            vx = random.uniform(-7, 7)
+            vy = random.uniform(2, 6)
+        else:
+            vx = random.uniform(-1, 1)
+            vy = random.uniform(8, 12)
+
+        drops.append({
+            "type": drop_type,
+            "vx": vx,
+            "vy": vy,
+            "x": 320,
+            "y": 110,
+            "pattern": burst_pattern
+        })
+
+    return drops
+
+
+def roll_boss_skill_payload():
+    """抽出下一個 Boss 技能，並整理成前端可套用的 payload。"""
+    skill_key = random.choice(BOSS_SKILL_POOL)
+    payload = {
+        "skill": skill_key,
+        "next_skill_ms": roll_boss_skill_interval_ms()
+    }
+
+    if skill_key == "burst_drops":
+        payload["drops"] = build_boss_burst_drops()
+    elif skill_key == "reverse_controls":
+        payload["duration_ms"] = BOSS_REVERSE_CONTROLS_DURATION_MS
+
+    return payload
+
+
+def get_boss_hp_percent():
+    """回傳 Boss 目前血量百分比，供前端與 LLM 共用。"""
+    return BOSS_STATS["current_hp"] / BOSS_STATS["max_hp"]
 
 @app.route('/api/boss/damage', methods=['POST'])
 def damage_boss():
-    """讓 Boss 扣血，並回傳最新血量與階段。"""
+    """讓 Boss 扣血，並回傳最新的單血條結果。"""
     damage = request.json.get('damage', 10)
     BOSS_STATS["current_hp"] = max(0, BOSS_STATS["current_hp"] - damage)
     if BOSS_STATS["current_hp"] <= 0:
@@ -160,40 +205,23 @@ def damage_boss():
     return jsonify({
         "hp": BOSS_STATS["current_hp"],
         "active": BOSS_STATS["active"],
-        "phase": get_boss_phase()
+        "max_hp": BOSS_STATS["max_hp"],
+        "hp_percent": get_boss_hp_percent()
     })
 
-@app.route('/api/boss/burst_drops')
-def get_boss_burst_drops():
-    """
-    依 Boss 階段產生特殊噴發掉落資料。
-    """
-    phase = request.args.get('phase', default='STORM')
-    count = 12 if phase != "DESPERATE" else 20
-    drops = []
-    
-    for i in range(count):
-        # Boss 噴發的資料通常比較危險，因此 riskLevel 直接拉高
-        drop_type = choose_data_type("ENDLESS", True, 2.0)
-        
-        # 不同階段使用不同的噴發軌跡
-        if phase == "STORM":
-            # 扇形噴發
-            angle = (i / count) * math.pi
-            vx = math.cos(angle) * 6
-            vy = math.sin(angle) * 4 + 2
-        elif phase == "CHAOS":
-            # 隨機散射
-            vx = random.uniform(-7, 7)
-            vy = random.uniform(2, 6)
-        else:
-            # DESPERATE：高速垂直落下
-            vx = random.uniform(-1, 1)
-            vy = random.uniform(8, 12)
 
-        drops.append({"type": drop_type, "vx": vx, "vy": vy, "x": 320})  # 從畫面中央噴出
-    return jsonify(drops)
+@app.route('/api/boss/skill', methods=['POST'])
+def activate_boss_skill():
+    """讓前端取得下一次 Boss 技能與後續冷卻時間。"""
+    if not BOSS_STATS["active"]:
+        return jsonify({
+            "error": "boss_inactive",
+            "next_skill_ms": None
+        }), 409
 
+    return jsonify(roll_boss_skill_payload())
+
+# Boss 出場時只需要把單條血量重置，不再帶入任何切階段狀態。
 @app.route('/api/boss/spawn', methods=['POST'])
 def spawn_boss():
     """重置 Boss 血量並標記為出現中。"""
@@ -202,10 +230,11 @@ def spawn_boss():
     return jsonify({
         "status": "ok", 
         "hp": BOSS_STATS["current_hp"], 
-        "max_hp": BOSS_STATS["max_hp"]
+        "max_hp": BOSS_STATS["max_hp"],
+        "next_skill_ms": roll_boss_skill_interval_ms()
     })
 
-
+# Boss 台詞只根據單血條比例與玩家表現決定內容，不再傳遞階段資訊。
 @app.route('/api/boss/taunt', methods=['POST'])
 def boss_taunt():
     """
@@ -214,43 +243,36 @@ def boss_taunt():
       {
         "tone": "taunt" | "praise",
         "context": {
-          "bossPhase": "STORM" | "CHAOS" | "DESPERATE",
           "bossHpPercent": 0.0-1.0,
           "playerScore": number,
           "buffer": 0-100,
           "combo": number,
-          "recentEvent": "timed" | "phase_change" | "flush" | "buffer_threshold" | "combo_milestone"
+          "recentEvent": "timed" | "flush" | "buffer_threshold" | "combo_milestone"
         }
       }
     回應：
-      成功 -> { "reply": "...（不超過20字）" }
+      成功 -> { "reply": "...（不超過25字）" }
       失敗／逾時／超字／LLM 未啟用 -> { "reply": "" }（前端不顯示）
     """
     data = request.get_json(silent=True) or {}
     tone = data.get("tone", "taunt")
     context = data.get("context") or {}
 
-    reply = generate_boss_taunt(context, tone)
-    if not reply:
-        return jsonify({"reply": ""})
-    return jsonify({"reply": reply})
+    result = generate_boss_taunt(context, tone)
+    status_code = 200 if result.get("ok") else (result.get("httpStatus") or 503)
+    return jsonify(result), status_code
 
-
-@app.route('/api/llm/status')
-def llm_status_route():
-    """提供前端 debug 用：檢查 LLM 是否已正確設定。"""
-    return jsonify({"available": is_llm_available()})
 
 # 排行榜與單場紀錄目前都先存成本地檔案
 LEADERBOARD_FILE = "leaderboard.json"
 GAME_LOGS_FILE = "game_logs.jsonl"
 
 def choose_data_type(phase, flush_danger, risk_level):
+    """依模式、Flush 狀態與風險值決定下一個資料類型。"""
     # --- 新增：6% 機率掉落緩速技能球 (Flush 噴出的不掉落技能) ---
     if not flush_danger and random.random() < 0.06: 
         return "skill_freeze"
     # --------------------------------------------------------
-    """依模式、Flush 狀態與風險值決定下一個資料類型。"""
     bad_data_multiplier = 1 + risk_level * 0.25
     entries = []
     
@@ -370,4 +392,4 @@ def log_event():
     return jsonify({"status": "ok"})
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5002)
+    app.run(debug=True, port=5000)

@@ -1,6 +1,6 @@
 /*
  * render.js
- * 這份檔案負責：HUD、排行榜與分數顯示、特效、主遊戲畫面、開始畫面與說明畫面的所有繪製邏輯
+ * 這份檔案負責：HUD、排行榜與分數顯示、特效、主遊戲畫面、開始畫面、說明畫面與 Game Over 結算畫面的所有繪製邏輯
  */
 
 // 繪製排行榜面板內容
@@ -36,6 +36,306 @@ function renderLeaderboard(liveScore = null) {
         }
         ui.leaderboardList.appendChild(li);
     }
+}
+
+// 將結算圖表交給 Plotly 繪製，並統一套用固定尺寸設定。
+function renderPlotlyGameOverChart(container, data, layout) {
+    if (!container) return;
+
+    if (typeof Plotly === "undefined") {
+        container.textContent = "Plotly unavailable";
+        container.style.display = "grid";
+        container.style.placeItems = "center";
+        container.style.color = "#91a5b5";
+        container.style.fontFamily = "Orbitron, 'Share Tech Mono', Consolas, monospace";
+        container.style.fontSize = "12px";
+        return;
+    }
+
+    Plotly.purge(container);
+    Plotly.newPlot(container, data, layout, {
+        displayModeBar: false,
+        staticPlot: true
+    }).catch((error) => console.error("Plotly render failed", error));
+}
+
+// 結算畫面中兩張 Plotly 圖表共用的固定尺寸。
+const GAME_OVER_PLOT_WIDTH = 300;
+const GAME_OVER_PLOT_HEIGHT = 240;
+
+// 用 Plotly 繪製單場 Buffer 壓力變化折線圖。
+function drawGameOverChart(container, history) {
+    if (!container) return;
+    if (!history || history.length === 0) {
+        container.innerHTML = "";
+        return;
+    }
+
+    const minT = history[0].at;
+    const maxT = history[history.length - 1].at;
+    const durationMs = Math.max(1, maxT - minT);
+    const durationSeconds = durationMs / 1000;
+    const xRangeMax = Math.max(0.1, durationSeconds);
+    const bufferTrace = history.map((point) => ({
+        x: (point.at - minT) / 1000,
+        y: point.buffer
+    }));
+    const flushTrace = history
+        .filter((point) => point.action === "flush")
+        .map((point) => ({
+            x: (point.at - minT) / 1000,
+            y: point.buffer
+        }));
+
+    renderPlotlyGameOverChart(
+        container,
+        [
+            {
+                type: "scatter",
+                mode: "lines",
+                x: bufferTrace.map((point) => point.x),
+                y: bufferTrace.map((point) => point.y),
+                line: {
+                    color: "#32d6ff",
+                    width: 2.5
+                },
+                hoverinfo: "skip",
+                showlegend: false
+            },
+            {
+                type: "scatter",
+                mode: "markers",
+                name: "FLUSH",
+                x: flushTrace.map((point) => point.x),
+                y: flushTrace.map((point) => point.y),
+                marker: {
+                    color: "#ff5c7c",
+                    size: 9
+                },
+                hoverinfo: "skip",
+                showlegend: false
+            }
+        ],
+        {
+            width: GAME_OVER_PLOT_WIDTH,
+            height: GAME_OVER_PLOT_HEIGHT,
+            margin: { t: 30, r: 20, b: 25, l: 20, pad: 0 },
+            showlegend: false,
+            paper_bgcolor: "rgba(0,0,0,0)",
+            plot_bgcolor: "rgba(0,0,0,0)",
+            xaxis: {
+                domain: [0.02, 0.998],
+                range: [0, xRangeMax],
+                tickmode: "array",
+                tickvals: [0, xRangeMax],
+                ticktext: ["0s", `${durationSeconds.toFixed(1)}s`],
+                tickfont: {
+                    family: "Orbitron, 'Share Tech Mono', Consolas, monospace",
+                    size: 10,
+                    color: "#91a5b5"
+                },
+                showgrid: false,
+                zeroline: false,
+                showline: false,
+                ticks: "",
+                fixedrange: true
+            },
+            yaxis: {
+                domain: [0.02, 0.995],
+                range: [0, 100],
+                tickmode: "array",
+                tickvals: [20, 50, 80, 100],
+                ticksuffix: "%",
+                tickfont: {
+                    family: "Orbitron, 'Share Tech Mono', Consolas, monospace",
+                    size: 10,
+                    color: "#91a5b5"
+                },
+                gridcolor: "rgba(145, 165, 181, 0.15)",
+                zeroline: false,
+                fixedrange: true
+            },
+            shapes: [
+                {
+                    type: "rect",
+                    xref: "x",
+                    yref: "y",
+                    x0: 0,
+                    x1: xRangeMax,
+                    y0: 80,
+                    y1: 100,
+                    fillcolor: "rgba(255, 92, 124, 0.08)",
+                    line: { width: 0 },
+                    layer: "below"
+                },
+                {
+                    type: "line",
+                    xref: "x",
+                    yref: "y",
+                    x0: 0,
+                    x1: xRangeMax,
+                    y0: 80,
+                    y1: 80,
+                    line: {
+                        color: "rgba(255, 92, 124, 0.5)",
+                        width: 1.5,
+                        dash: "dash"
+                    }
+                }
+            ]
+        }
+    );
+}
+
+// 用 Plotly 繪製各資料型別處理量的雷達圖。
+function drawTypeRadarChart(container, typeStats) {
+    if (!container) return;
+    if (!typeStats) {
+        container.innerHTML = "";
+        return;
+    }
+
+    const categories = [
+        { key: "clean", label: "CLEAN", color: "#66e28c" },
+        { key: "compressed", label: "COMP", color: "#32d6ff" },
+        { key: "heavy", label: "HEAVY", color: "#ffd166" },
+        { key: "virus", label: "VIRUS", color: "#ff5c7c" },
+        { key: "junk", label: "JUNK", color: "#91a5b5" }
+    ];
+    const totals = categories.map((category) => {
+        const stat = typeStats[category.key] || { absorbed: 0, discarded: 0 };
+        return stat.absorbed + stat.discarded;
+    });
+    const maxVal = Math.max(1, ...totals);
+    const radarRangeMax = maxVal * 1.2;
+    const labelRadius = maxVal * 1.16;
+    const theta = categories.map((category) => category.label);
+    const closedTheta = [...theta, theta[0]];
+    const closedTotals = [...totals, totals[0]];
+
+    renderPlotlyGameOverChart(
+        container,
+        [
+            {
+                type: "scatterpolar",
+                mode: "lines+markers",
+                r: closedTotals,
+                theta: closedTheta,
+                fill: "toself",
+                fillcolor: "rgba(143, 124, 255, 0.35)",
+                line: {
+                    color: "#8f7cff",
+                    width: 2
+                },
+                marker: {
+                    size: 8,
+                    color: [...categories.map((category) => category.color), categories[0].color]
+                },
+                hoverinfo: "skip",
+                showlegend: false
+            },
+            {
+                type: "scatterpolar",
+                mode: "text",
+                r: categories.map(() => labelRadius),
+                theta,
+                text: theta,
+                textfont: {
+                    family: "Orbitron, 'Share Tech Mono', Consolas, monospace",
+                    size: 11,
+                    color: categories.map((category) => category.color)
+                },
+                hoverinfo: "skip",
+                showlegend: false
+            }
+        ],
+        {
+            width: GAME_OVER_PLOT_WIDTH,
+            height: GAME_OVER_PLOT_HEIGHT,
+            margin: { t: 25, r: 15, b: 5, l: 15, pad: 0 },
+            paper_bgcolor: "rgba(0,0,0,0)",
+            plot_bgcolor: "rgba(0,0,0,0)",
+            polar: {
+                domain: {
+                    x: [0, 1],
+                    y: [0, 1]
+                },
+                bgcolor: "rgba(0,0,0,0)",
+                radialaxis: {
+                    range: [0, radarRangeMax],
+                    tickmode: "array",
+                    tickvals: [maxVal / 3, (maxVal * 2) / 3, maxVal],
+                    ticktext: ["", "", ""],
+                    gridcolor: "rgba(145, 165, 181, 0.15)",
+                    linecolor: "rgba(145, 165, 181, 0.15)",
+                    angle: 90,
+                    showline: false,
+                    ticks: "",
+                    fixedrange: true
+                },
+                angularaxis: {
+                    tickmode: "array",
+                    tickvals: theta,
+                    ticktext: categories.map(() => ""),
+                    gridcolor: "rgba(145, 165, 181, 0.15)",
+                    linecolor: "rgba(145, 165, 181, 0.15)",
+                    ticks: "",
+                    rotation: 90,
+                    direction: "clockwise",
+                    fixedrange: true
+                }
+            }
+        }
+    );
+}
+
+// 建立 Game Over 結算面板的統計文字與兩張 Plotly 圖表。
+function renderGameOverPanel() {
+    ui.finalStats.innerHTML = `
+        <div style="font-size:16px; margin-bottom: 8px; color:var(--text); letter-spacing: 2px;">
+            FINAL SCORE <strong style="color:var(--cyan); font-size:26px;">${game.score}</strong>
+        </div>
+        <div style="font-size:12px; color:var(--muted); display:flex; justify-content:center; gap: 14px; flex-wrap:wrap;">
+            <span>處理: <strong style="color:#fff">${game.handled}</strong></span>
+            <span>吸收: <strong style="color:#fff">${game.absorbed}</strong></span>
+            <span>丟棄: <strong style="color:#fff">${game.discarded}</strong></span>
+            <span>自動吸收: <strong style="color:#fff">${game.autoAbsorbed}</strong></span>
+            <span>flush次數: <strong style="color:#fff">${game.flushes}</strong></span>
+        </div>
+    `;
+
+    const chartsContainer = document.createElement("div");
+    chartsContainer.style.display = "flex";
+    chartsContainer.style.gap = "12px";
+    chartsContainer.style.marginTop = "16px";
+    chartsContainer.style.width = "100%";
+    chartsContainer.style.justifyContent = "center";
+    chartsContainer.style.alignItems = "flex-start";
+
+    const lineChart = document.createElement("div");
+    lineChart.className = "game-over-chart game-over-chart--line";
+    lineChart.innerHTML = `
+        <div class="game-over-chart__title">SYSTEM LOAD</div>
+        <div class="game-over-chart__legend">
+            <span class="game-over-chart__legend-dot"></span>
+            FLUSH
+        </div>
+        <div class="game-over-chart__plot"></div>
+    `;
+    chartsContainer.appendChild(lineChart);
+
+    const radarChart = document.createElement("div");
+    radarChart.className = "game-over-chart game-over-chart--radar";
+    radarChart.innerHTML = `
+        <div class="game-over-chart__title">DATA PROFILE</div>
+        <div class="game-over-chart__plot"></div>
+    `;
+    chartsContainer.appendChild(radarChart);
+
+    ui.finalStats.appendChild(chartsContainer);
+    drawGameOverChart(lineChart.querySelector(".game-over-chart__plot"), game.history);
+    drawTypeRadarChart(radarChart.querySelector(".game-over-chart__plot"), game.typeStats);
+    ui.gameOverPanel.classList.remove("hidden");
 }
 
 // 更新右側顯示的最佳分數
@@ -254,18 +554,6 @@ function drawDropIcon(context, spriteIndex, x, y, w, h) {
 }
 
 
-// 繪製單一掉落資料的圖示
-function drawDropIcon(context, spriteIndex, x, y, w, h) {
-    const source = SPRITE_CONFIG.drops[spriteIndex] || SPRITE_CONFIG.drops[0];
-    if (imagesLoaded && images.dropData?.complete) {
-        context.drawImage(images.dropData, source.x, source.y, source.w, source.h, x, y, w, h);
-        return;
-    }
-
-    context.fillStyle = "#32d6ff";
-    context.fillRect(x, y, w, h);
-}
-
 // 繪製遊戲背景與掃描線效果
 function drawBackground(context) {
     const gradient = context.createLinearGradient(0, 0, 0, GAME_HEIGHT);
@@ -418,6 +706,28 @@ function drawFlushOverlay(context) {
     context.restore();
 }
 
+// 繪製 Boss 反轉控制技能生效時的全畫面提示濾鏡。
+function drawReverseControlsOverlay(context) {
+    const remainingMs = Math.max(0, game?.bossSkill?.reverseControlsMs ?? 0);
+    if (remainingMs <= 0) return;
+
+    const blinkWindow = remainingMs <= 2000;
+    const pulse = blinkWindow
+        ? 0.35 + ((Math.sin(globalAnimTimer * 0.22) + 1) / 2) * 0.28
+        : 0.46 + Math.sin(globalAnimTimer * 0.18) * 0.12;
+
+    context.save();
+    context.fillStyle = `rgba(70, 210, 255, ${0.08 + pulse * 0.12})`;
+    context.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+
+    if (Math.floor(visualAnimMs / 110) % 2 === 0) {
+        context.fillStyle = "rgba(120, 220, 255, 0.05)";
+        context.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+    }
+
+    context.restore();
+}
+
 // 繪製左上角的執行中訊息佇列，依觸發順序排序並在補位時做平滑動畫
 function drawExecutionStatusBanners(context) {
     const banners = [];
@@ -437,6 +747,24 @@ function drawExecutionStatusBanners(context) {
             text: "FREEZE EXECUTING...",
             color: "#32d6ff",
             startedAt: freezeBannerStartMs ?? visualAnimMs
+        });
+    }
+
+    if ((game?.bossSkill?.reverseControlsMs ?? 0) > 0) {
+        banners.push({
+            key: "reverse",
+            text: "CONTROLS INVERTED...",
+            color: "#66e28c",
+            startedAt: visualAnimMs - (game.bossSkill.reverseControlsMs ?? 0)
+        });
+    }
+
+    if (Math.max(game?.bossSkill?.burstLeadMs ?? 0, game?.bossSkill?.burstAfterMs ?? 0) > 0) {
+        banners.push({
+            key: "warning",
+            text: "SYSTEM WARNING...",
+            color: "#ff5c7c",
+            startedAt: visualAnimMs - Math.max(game.bossSkill.burstLeadMs ?? 0, game.bossSkill.burstAfterMs ?? 0)
         });
     }
 
@@ -464,6 +792,29 @@ function drawExecutionStatusBanners(context) {
     });
 }
 
+// 繪製 Boss 噴發技能警告與施放期間的全畫面閃爍。
+function drawBossSkillWarningOverlay(context) {
+    const skill = game?.bossSkill;
+    if (!skill) return;
+
+    const activeMs = Math.max(skill.burstLeadMs ?? 0, skill.burstAfterMs ?? 0);
+    if (activeMs <= 0) return;
+
+    const pulse = 0.42 + Math.sin(globalAnimTimer * 0.22) * 0.18;
+
+    context.save();
+    context.fillStyle = `rgba(255, 92, 124, ${0.11 + pulse * 0.18})`;
+    context.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+
+    if (Math.floor(visualAnimMs / 90) % 2 === 0) {
+        context.fillStyle = "rgba(255, 184, 84, 0.07)";
+        context.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+    }
+
+    context.restore();
+}
+
+// 繪製擊敗 Boss 後解鎖 Endless 模式的提示字樣。
 function drawEndlessUnlockedBanner(context) {
     if (!game?.endlessBannerStartMs) return;
 
@@ -641,7 +992,10 @@ function drawGame() {
     // 2. 畫地圖與物件
     platforms.forEach((platform) => drawPlatform(ctx, platform));
     drawMapTransition(ctx);
-    drops.forEach((drop) => drop.draw(ctx));
+    drops.forEach((drop) => {
+        if (drop?.renderLayer === "bossBurstFront") return;
+        drop.draw(ctx);
+    });
     drawTrashZone(ctx);
 
     // 3. 畫 Boss
@@ -656,6 +1010,10 @@ function drawGame() {
     if (!preserveDeathOnly) {
         drawEffectParticles(ctx);
     }
+    drops.forEach((drop) => {
+        if (drop?.renderLayer !== "bossBurstFront") return;
+        drop.draw(ctx);
+    });
 
     ctx.restore(); // 復原畫布偏移，確保 UI 介面維持固定不晃動
     // --- 新增：時空凍結 (緩速) 發動時的螢幕濾鏡 ---
@@ -675,6 +1033,8 @@ function drawGame() {
 
     // 5. 畫 UI 層 (最上層)
     drawFlushOverlay(ctx);
+    drawReverseControlsOverlay(ctx);
+    drawBossSkillWarningOverlay(ctx);
     drawExecutionStatusBanners(ctx);
     drawEndlessUnlockedBanner(ctx);
     drawBufferHud(ctx);
@@ -760,7 +1120,7 @@ function drawGuideSpriteFrame(context, image, frame, x, y, w, h) {
 }
 
 // 在教學畫面繪製單顆街機按鈕圖示。
-function drawGuideButtonIcon(context, key, x, y, active, label) {
+function drawGuideButtonIcon(context, key, x, y, active) {
     const button = SPRITE_CONFIG.arcadeButtons[key];
     const frame = (active ? button.down : button.up)[0];
     drawGuideSpriteFrame(context, images.arcadeButtons, frame, x, y, 32, 32);
@@ -875,13 +1235,13 @@ function drawGuideScreen(context) {
     const gameOverIconX = lineX + context.measureText(gameOverText).width + iconGap;
 
     drawGuideStickIcon(context, moveIconX, lineStartY - 24, moveRight ? "right" : "left");
-    drawGuideButtonIcon(context, "c", jumpIconX, lineStartY + lineGap * 1 - 14, jumpActive, "SPACE");
-    drawGuideButtonIcon(context, "d", dashIconX, lineStartY + lineGap * 2 - 14, dashActive, "SHIFT");
+    drawGuideButtonIcon(context, "c", jumpIconX, lineStartY + lineGap * 1 - 14, jumpActive);
+    drawGuideButtonIcon(context, "d", dashIconX, lineStartY + lineGap * 2 - 14, dashActive);
 
     drawDropIcon(context, goodPacket ? DATA_TYPES.clean.sprite : DATA_TYPES.junk.sprite, decisionIconX, lineStartY + lineGap * 3 - 12, 22, 22);
-    drawGuideButtonIcon(context, goodPacket ? "a" : "b", decisionIconX + 30, lineStartY + lineGap * 3 - 14, true, goodPacket ? "J" : "K");
+    drawGuideButtonIcon(context, goodPacket ? "a" : "b", decisionIconX + 30, lineStartY + lineGap * 3 - 14, true);
 
-    drawGuideButtonIcon(context, "b", flushIconX, lineStartY + lineGap * 4 - 14, flushActive, "K");
+    drawGuideButtonIcon(context, "b", flushIconX, lineStartY + lineGap * 4 - 14, flushActive);
     drawGuideComboIcon(context, comboIconX, lineStartY + lineGap * 5 - 2);
 
     context.save();
@@ -917,7 +1277,28 @@ function drawGuideScreen(context) {
 }
 
 
-// --- 新增：繪製爆炸粒子特效 ---
+// 建立打擊回饋需要的畫面震動與爆炸粒子。
+function triggerJuice(x, y, color, count, shakeIntensity, shakeDuration) {
+    screenShakeIntensity = shakeIntensity;
+    screenShakeMs = shakeDuration;
+
+    for (let i = 0; i < count; i++) {
+        const angle = Math.random() * Math.PI * 2;
+        const speed = Math.random() * 5 + 2;
+        effectParticles.push({
+            x,
+            y,
+            vx: Math.cos(angle) * speed,
+            vy: Math.sin(angle) * speed,
+            life: 300 + Math.random() * 300,
+            maxLife: 600,
+            size: Math.random() * 3 + 2,
+            color
+        });
+    }
+}
+
+// 繪製打擊回饋使用的爆炸粒子特效。
 function drawEffectParticles(context) {
     if (effectParticles.length === 0) return;
 
@@ -937,212 +1318,4 @@ function drawEffectParticles(context) {
     });
 
     context.restore();
-}
-// ============================================================================
-// 以下為結算畫面的雙圖表繪製程式碼 (大字體清晰版)
-// ============================================================================
-
-// --- 1. 繪製單局 Buffer 壓力波動圖 ---
-function drawGameOverChart(canvas, history) {
-    if (!history || history.length === 0) return;
-
-    const ctx = canvas.getContext('2d');
-    const w = canvas.width;
-    const h = canvas.height;
-
-    // ⚠️ 加大內部邊距，留空間給變大的字
-    const padding = { top: 35, right: 30, bottom: 25, left: 55 };
-    const chartW = w - padding.left - padding.right;
-    const chartH = h - padding.top - padding.bottom;
-
-    ctx.clearRect(0, 0, w, h);
-
-    const minT = history[0].at;
-    const maxT = history[history.length - 1].at;
-    const duration = maxT - minT || 1;
-
-    ctx.fillStyle = "rgba(255, 92, 124, 0.08)";
-    ctx.fillRect(padding.left, padding.top, chartW, chartH * 0.2);
-
-    // ⚠️ 字體放大並加粗
-    ctx.font = "bold 13px 'Orbitron', 'Share Tech Mono', Consolas, monospace";
-
-    const yTicks = [0, 50, 80, 100];
-    ctx.textAlign = "right";
-    ctx.textBaseline = "middle";
-
-    yTicks.forEach(tick => {
-        const y = padding.top + chartH * (1 - tick / 100);
-        ctx.strokeStyle = tick === 80 ? "rgba(255, 92, 124, 0.5)" : "rgba(145, 165, 181, 0.15)";
-        ctx.lineWidth = tick === 80 ? 1.5 : 1;
-        if (tick === 80) ctx.setLineDash([4, 4]);
-
-        ctx.beginPath();
-        ctx.moveTo(padding.left, y);
-        ctx.lineTo(w - padding.right, y);
-        ctx.stroke();
-        ctx.setLineDash([]);
-
-        ctx.fillStyle = tick >= 80 ? "#ff5c7c" : "#91a5b5";
-        ctx.fillText(tick + "%", padding.left - 8, y);
-    });
-
-    ctx.textAlign = "center";
-    ctx.textBaseline = "top";
-    ctx.fillStyle = "#91a5b5";
-    ctx.fillText("0s", padding.left, h - padding.bottom + 8);
-    ctx.fillText((duration / 1000).toFixed(1) + "s", padding.left + chartW, h - padding.bottom + 8);
-
-    ctx.textAlign = "left";
-    ctx.textBaseline = "bottom";
-    ctx.fillStyle = "#edf7ff";
-    ctx.font = "bold 15px 'Orbitron', 'Share Tech Mono', Consolas, monospace"; // 標題字再放大
-    ctx.fillText("SYSTEM LOAD", padding.left, padding.top - 12);
-
-    // 圖例位置微調
-    ctx.font = "bold 13px 'Orbitron', 'Share Tech Mono', Consolas, monospace";
-    const legendX = w - padding.right - 70;
-    const legendY = padding.top - 16;
-    ctx.fillStyle = "#ff5c7c";
-    ctx.beginPath();
-    ctx.arc(legendX, legendY, 4.5, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = "#91a5b5";
-    ctx.textAlign = "left";
-    ctx.textBaseline = "middle";
-    ctx.fillText("FLUSH", legendX + 10, legendY + 1);
-
-    ctx.beginPath();
-    ctx.strokeStyle = "#32d6ff";
-    ctx.lineWidth = 2.5;
-    ctx.lineJoin = "round";
-    ctx.shadowBlur = 8;
-    ctx.shadowColor = "#32d6ff";
-
-    history.forEach((point, index) => {
-        const x = padding.left + ((point.at - minT) / duration) * chartW;
-        const y = padding.top + chartH * (1 - point.buffer / 100);
-        if (index === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-    });
-    ctx.stroke();
-    ctx.shadowBlur = 0;
-
-    history.forEach(point => {
-        if (point.action === 'flush') {
-            const x = padding.left + ((point.at - minT) / duration) * chartW;
-            const y = padding.top + chartH * (1 - point.buffer / 100);
-            ctx.fillStyle = "#ff5c7c";
-            ctx.shadowColor = "#ff5c7c";
-            ctx.shadowBlur = 6;
-            ctx.beginPath();
-            ctx.arc(x, y, 5, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.shadowBlur = 0;
-        }
-    });
-}
-
-// --- 2. 繪製資料類型收集比例的五角雷達圖 ---
-function drawTypeRadarChart(canvas, typeStats) {
-    if (!typeStats) return;
-
-    const ctx = canvas.getContext('2d');
-    const w = canvas.width;
-    const h = canvas.height;
-    ctx.clearRect(0, 0, w, h);
-
-    const categories = [
-        { key: 'clean', label: 'CLEAN', color: '#66e28c' },
-        { key: 'compressed', label: 'COMP', color: '#32d6ff' },
-        { key: 'heavy', label: 'HEAVY', color: '#ffd166' },
-        { key: 'virus', label: 'VIRUS', color: '#ff5c7c' },
-        { key: 'junk', label: 'JUNK', color: '#91a5b5' }
-    ];
-
-    let maxVal = 1;
-    const dataVals = categories.map(cat => {
-        const stat = typeStats[cat.key] || { absorbed: 0, discarded: 0 };
-        const total = stat.absorbed + stat.discarded;
-        if (total > maxVal) maxVal = total;
-        return total;
-    });
-
-    const cx = w / 2;
-    const cy = h / 2 + 14;
-    // ⚠️ 縮小一點點半徑，因為字變大了，避免字被切到
-    const radius = Math.min(w, h) / 2 - 40;
-
-    ctx.strokeStyle = "rgba(145, 165, 181, 0.15)";
-    ctx.lineWidth = 1;
-    for (let level = 1; level <= 3; level++) {
-        const r = radius * (level / 3);
-        ctx.beginPath();
-        for (let i = 0; i < 5; i++) {
-            const angle = -Math.PI / 2 + (i * 2 * Math.PI / 5);
-            const px = cx + Math.cos(angle) * r;
-            const py = cy + Math.sin(angle) * r;
-            if (i === 0) ctx.moveTo(px, py);
-            else ctx.lineTo(px, py);
-        }
-        ctx.closePath();
-        ctx.stroke();
-    }
-
-    ctx.beginPath();
-    for (let i = 0; i < 5; i++) {
-        const angle = -Math.PI / 2 + (i * 2 * Math.PI / 5);
-        ctx.moveTo(cx, cy);
-        ctx.lineTo(cx + Math.cos(angle) * radius, cy + Math.sin(angle) * radius);
-    }
-    ctx.stroke();
-
-    ctx.beginPath();
-    const points = [];
-    for (let i = 0; i < 5; i++) {
-        const valueRatio = Math.max(0.05, dataVals[i] / maxVal);
-        const r = radius * valueRatio;
-        const angle = -Math.PI / 2 + (i * 2 * Math.PI / 5);
-        const px = cx + Math.cos(angle) * r;
-        const py = cy + Math.sin(angle) * r;
-        points.push({ x: px, y: py });
-        if (i === 0) ctx.moveTo(px, py);
-        else ctx.lineTo(px, py);
-    }
-    ctx.closePath();
-
-    ctx.fillStyle = "rgba(143, 124, 255, 0.35)";
-    ctx.fill();
-    ctx.strokeStyle = "#8f7cff";
-    ctx.lineWidth = 1.5;
-    ctx.shadowBlur = 10;
-    ctx.shadowColor = "#8f7cff";
-    ctx.stroke();
-    ctx.shadowBlur = 0;
-
-    // ⚠️ 字體放大並加粗
-    ctx.font = "bold 13px 'Orbitron', 'Share Tech Mono', Consolas, monospace";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-
-    for (let i = 0; i < 5; i++) {
-        const angle = -Math.PI / 2 + (i * 2 * Math.PI / 5);
-        const cat = categories[i];
-
-        ctx.fillStyle = cat.color;
-        ctx.beginPath();
-        ctx.arc(points[i].x, points[i].y, 3.5, 0, Math.PI * 2);
-        ctx.fill();
-
-        // ⚠️ 把字往外推更遠一點，才不會跟頂點卡在一起
-        const tx = cx + Math.cos(angle) * (radius + 20);
-        const ty = cy + Math.sin(angle) * (radius + 18);
-        ctx.fillText(cat.label, tx, ty);
-    }
-
-    ctx.textAlign = "left";
-    ctx.textBaseline = "top";
-    ctx.fillStyle = "#edf7ff";
-    ctx.font = "bold 15px 'Orbitron', 'Share Tech Mono', Consolas, monospace"; // 標題放大
-    ctx.fillText("DATA PROFILE", 14, 10);
 }

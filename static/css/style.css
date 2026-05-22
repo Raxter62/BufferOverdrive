@@ -446,12 +446,65 @@ h2 {
     }
 }
 /* --- 修改：結算畫面圖表樣式 (支援多圖表並排) --- */
-.game-over-canvas {
+.game-over-chart {
+    position: relative;
     border: 1px solid var(--panel-2);
     border-radius: 8px;
     background: rgba(0, 0, 0, 0.4);
     box-shadow: inset 0 0 10px rgba(0, 0, 0, 0.8);
-    image-rendering: pixelated;
     height: 240px;
-    width: 300px; /* 讓 flex 佈局自動分配比例 */
+    width: 300px;
+    overflow: hidden;
+}
+
+.game-over-chart--line {
+    flex: 0 0 300px;
+}
+
+.game-over-chart--radar {
+    flex: 0 0 300px;
+}
+
+.game-over-chart__title {
+    position: absolute;
+    top: 8px;
+    left: 10px;
+    z-index: 2;
+    color: #edf7ff;
+    font: 700 13px 'Orbitron', 'Share Tech Mono', Consolas, monospace;
+    letter-spacing: 0.35px;
+    pointer-events: none;
+}
+
+.game-over-chart__legend {
+    position: absolute;
+    top: 9px;
+    right: 10px;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: #91a5b5;
+    font: 700 11px 'Orbitron', 'Share Tech Mono', Consolas, monospace;
+    pointer-events: none;
+}
+
+.game-over-chart__legend-dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 999px;
+    background: #ff5c7c;
+    box-shadow: 0 0 8px rgba(255, 92, 124, 0.65);
+}
+
+.game-over-chart__plot {
+    width: 300px;
+    height: 240px;
+}
+
+.game-over-chart .js-plotly-plot,
+.game-over-chart .plot-container,
+.game-over-chart .svg-container {
+    width: 100% !important;
+    height: 100% !important;
 }

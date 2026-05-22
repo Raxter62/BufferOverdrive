@@ -1,19 +1,12 @@
 /*
  * boss.js
- * 這份檔案負責：Boss 生成、受傷同步、Boss 畫面繪製，以及 Boss 即時台詞（LLM）狀態機。
+ * 負責 Boss 的出場、扣血、技能狀態、單血條顯示，以及即時台詞狀態機。
  *
- * 台詞系統規格摘要：
- *  - 觸發：定時 25~40 秒隨機 + 階段切換 / Flush / Buffer 跨閾 / Combo 里程碑（不含 Fall）
- *  - 冷卻：15 秒，自「上一則顯示結束」起算；逾時/失敗/超字/空回傳 不算冷卻
- *  - LLM：後端 /api/boss/taunt；一次只送一則，等待期間新觸發合併成最新一筆
- *  - 顯示：Boss 旁對話框 3 秒；做法 A —— 顯示也排隊（前一則播完才播下一則）
- *  - 失敗 / 逾時（10s） / 超 20 字 → 不顯示，當功能不存在
- *  - Boss 被擊敗 或 Game Over → 清空 queue、忽略 in-flight、不再觸發
  */
 
-// 分數達標後向後端要求生成 Boss，並初始化前端顯示狀態
+// 分數達標後呼叫後端生成 Boss，並同步初始化前端顯示狀態。
 async function triggerBossSpawn() {
-    game.bossTriggered = true; // 確保同一局只會觸發一次 Boss 出場
+    game.bossTriggered = true;
 
     try {
         const res = await fetch("/api/boss/spawn", { method: "POST" });
@@ -22,21 +15,21 @@ async function triggerBossSpawn() {
         game.boss = {
             active: true,
             hp: data.hp,
-            maxHp: data.max_hp,
-            phase: "STORM"
+            maxHp: data.max_hp
         };
 
-        // Boss 出場：重置台詞狀態並準備第一次定時觸發
+        // 每次重新開打都要重置台詞狀態，避免沿用上一場的冷卻與佇列。
         resetBossTauntForNewFight();
-
-        // 保留既有提示方式，不改動其他功能流程
+        resetBossSkillForNewFight(data.next_skill_ms);
         console.log("ALERT: BOSS INCOMING!");
-    } catch (e) {
-        console.error("Failed to spawn boss:", e);
+    } catch (error) {
+        // 若生成失敗，放回未觸發狀態，避免之後永遠不再嘗試生成 Boss。
+        game.bossTriggered = false;
+        console.error("Failed to spawn boss:", error);
     }
 }
 
-// 玩家吸收資料時，將對應傷害同步到後端 Boss 血量
+// 玩家吸收資料後會呼叫這裡對 Boss 扣血，並同步前端的單血條數值。
 async function attackBoss(damage) {
     if (!game.boss || !game.boss.active) return;
 
@@ -47,79 +40,368 @@ async function attackBoss(damage) {
             body: JSON.stringify({ damage })
         });
         const status = await res.json();
-        game.boss.hp = status.hp;
-        game.boss.active = status.active;
-        if (status.phase) {
-            game.boss.phase = status.phase;
-        }
 
+        game.boss.hp = status.hp;
+        game.boss.maxHp = status.max_hp ?? game.boss.maxHp;
+        game.boss.active = status.active;
+
+        // Boss 歸零後直接進 Endless，不再有中途切狀態的過場。
         if (!status.active && !game.bossDefeated) {
             game.bossDefeated = true;
             recordEvent("boss-defeated");
-            cancelBossTaunts("boss-defeated");
+            cancelBossTaunts();
+            cancelBossSkills();
             enterEndless();
         }
-    } catch (e) {
-        console.error("Boss damage error", e);
+    } catch (error) {
+        console.error("Boss damage error", error);
     }
 }
 
-// 繪製 Boss 本體、血條與目前階段文字
-function drawBossVisual(context) {
-    const bx = GAME_WIDTH / 2 - 60;
-    const by = 50 + Math.sin(visualAnimMs / 500) * 10;
-
-    context.save();
-    context.shadowBlur = 20;
-    context.shadowColor = "#ff5c7c";
-    context.fillStyle = "#12202b";
-    context.strokeStyle = "#ff5c7c";
-    context.lineWidth = 4;
-    context.strokeRect(bx, by, 120, 60);
-    context.fillRect(bx, by, 120, 60);
-
-    const hpRate = game.boss.hp / game.boss.maxHp;
-    context.fillStyle = "#2b3440";
-    context.fillRect(bx, by - 20, 120, 8);
-    context.fillStyle = "#ff5c7c";
-    context.fillRect(bx, by - 20, 120 * hpRate, 8);
-
-    context.textAlign = "center";
-    setArcadeFont(context, 10);
-    context.fillStyle = "#fff";
-    context.fillText(`BOSS PHASE: ${game.boss.phase}`, GAME_WIDTH / 2, by - 25);
-    context.restore();
-
-    // 對話框（若有正在顯示的訊息）
-    drawBossSpeechBubble(context, bx, by);
+// 依動畫時間從 Boss 的循環 frame 清單取出目前要顯示的切圖。
+function getBossLoopFrame(frames, intervalMs, elapsedMs = visualAnimMs) {
+    if (!Array.isArray(frames) || frames.length === 0) return null;
+    const safeInterval = Math.max(1, intervalMs || 1);
+    const frameIndex = Math.floor(Math.max(0, elapsedMs) / safeInterval) % frames.length;
+    return frames[frameIndex] || frames[0];
 }
 
-/* =========================================================================
- *  Boss 台詞狀態機
- * =======================================================================*/
+// 取得 Boss 施放技能時的循環 frame，缺圖時回退到準備動作。
+function getBossCastLoopFrame(castConfig, elapsedMs) {
+    if (!castConfig?.prep) return null;
+    return getBossLoopFrame(
+        castConfig.loop,
+        BOSS_SKILL_FRAME_INTERVAL_MS,
+        elapsedMs
+    ) || castConfig.prep;
+}
 
-// 建立一份全新的台詞狀態，於 createGameState 與 resetBossTauntForNewFight 使用
-function createBossTauntState() {
+// 依目前技能狀態決定 Boss 本體切圖、光暈與氣場色彩。
+function getBossAnimationVisual() {
+    const bossConfig = SPRITE_CONFIG?.boss;
+    const skill = getBossSkillState();
+    if (!bossConfig || !skill) {
+        return {
+            frame: null,
+            glow: "#ff5c7c",
+            aura: "rgba(255, 92, 124, 0.18)"
+        };
+    }
+
+    if (skill.burstAfterMs > 0) {
+        const elapsedMs = Math.max(0, (skill.burstAfterTotalMs ?? 0) - skill.burstAfterMs);
+        return {
+            frame: getBossCastLoopFrame(bossConfig.burstCast, elapsedMs),
+            glow: "#32d6ff",
+            aura: "rgba(50, 214, 255, 0.18)"
+        };
+    }
+
+    if (skill.burstLeadMs > 0 || skill.pendingBurstDrops) {
+        return {
+            frame: bossConfig.burstCast?.prep ?? null,
+            glow: "#ffb854",
+            aura: "rgba(255, 184, 84, 0.16)"
+        };
+    }
+
+    if (skill.reverseControlsMs > 0) {
+        const elapsedMs = Math.max(0, (skill.reverseControlsTotalMs ?? 0) - skill.reverseControlsMs);
+        return {
+            frame: getBossLoopFrame(bossConfig.reverseLoop, BOSS_SKILL_FRAME_INTERVAL_MS, elapsedMs),
+            glow: "#7cffd7",
+            aura: "rgba(124, 255, 215, 0.16)"
+        };
+    }
+
     return {
-        // 觸發節奏
-        cooldownMs: 0,            // 距離下一則允許觸發的剩餘時間
-        timedTimerMs: -1,         // 定時觸發倒數；-1 = 尚未啟動（Boss 尚未出場）
-        lastBossPhase: null,      // 用來偵測階段切換
-        bufferFired: {},          // 已觸發過的 Buffer 閾值（70 / 90）
-        comboFired: {},           // 已觸發過的 Combo 里程碑（5 / 10）
-
-        // LLM 通訊
-        pendingContext: null,     // 等待送往 LLM 的最新 context（合併）
-        inFlight: false,          // 是否正在等 LLM 回傳
-        requestSeq: 0,            // 每次送出遞增，用來忽略已過期回應
-
-        // 顯示佇列（做法 A：LLM 回傳後排隊顯示）
-        displayQueue: [],         // string[]
-        currentMessage: null      // { text, startMs }
+        frame: getBossLoopFrame(bossConfig.idleLoop, BOSS_IDLE_FRAME_INTERVAL_MS),
+        glow: "#ff5c7c",
+        aura: "rgba(255, 92, 124, 0.12)"
     };
 }
 
-// 取得遊戲內的台詞狀態（保證存在）
+// 計算 Boss 在 Canvas 上的繪製位置與顯示尺寸。
+function getBossVisualBounds() {
+    const bossConfig = SPRITE_CONFIG?.boss ?? {};
+    const drawW = bossConfig?.draw?.w ?? 192;
+    const drawH = bossConfig?.draw?.h ?? 192;
+    const bx = GAME_WIDTH / 2 - drawW / 2;
+    const by = 18 + Math.sin(visualAnimMs / 500) * 10;
+    return { bx, by, drawW, drawH };
+}
+
+// 取得 Boss 噴發掉落物要出現的起始位置。
+function getBossBurstSpawnOrigin() {
+    const { bx, by, drawW, drawH } = getBossVisualBounds();
+    return {
+        x: bx + drawW * 0.12,
+        y: by + drawH * 0.12
+    };
+}
+// 繪製 Boss 本體與單條血量條，畫面上不再顯示任何階段資訊。
+function drawBossVisual(context) {
+    const bossConfig = SPRITE_CONFIG?.boss ?? {};
+    const { bx, by, drawW, drawH } = getBossVisualBounds();
+    const hpRate = game?.boss?.maxHp
+        ? Math.max(0, Math.min(1, game.boss.hp / game.boss.maxHp))
+        : 0;
+    const hpBarW = bossConfig?.hpBar?.w ?? 164;
+    const hpBarH = bossConfig?.hpBar?.h ?? 10;
+    const hpBarX = GAME_WIDTH / 2 - hpBarW / 2;
+    const hpBarY = by + (bossConfig?.hpBar?.yOffset ?? 16);
+    const visual = getBossAnimationVisual();
+    const frame = visual.frame;
+    const bossImage = images.boss;
+
+    context.save();
+    context.fillStyle = visual.aura;
+    context.beginPath();
+    context.ellipse(GAME_WIDTH / 2, by + drawH * 0.66, drawW * 0.24, 16, 0, 0, Math.PI * 2);
+    context.fill();
+    context.restore();
+
+    context.save();
+    context.shadowBlur = 24;
+    context.shadowColor = visual.glow;
+    if (bossImage?.complete && frame) {
+        context.drawImage(bossImage, frame.x, frame.y, frame.w, frame.h, bx, by, drawW, drawH);
+    } else {
+        context.fillStyle = "#12202b";
+        context.strokeStyle = visual.glow;
+        context.lineWidth = 4;
+        context.strokeRect(bx + 34, by + 42, drawW - 68, drawH - 96);
+        context.fillRect(bx + 34, by + 42, drawW - 68, drawH - 96);
+    }
+    context.restore();
+
+    context.save();
+    context.fillStyle = "#2b3440";
+    context.fillRect(hpBarX, hpBarY, hpBarW, hpBarH);
+    context.fillStyle = "#ff5c7c";
+    context.fillRect(hpBarX, hpBarY, hpBarW * hpRate, hpBarH);
+    context.strokeStyle = "rgba(237, 247, 255, 0.32)";
+    context.lineWidth = 2;
+    context.strokeRect(hpBarX, hpBarY, hpBarW, hpBarH);
+    context.textAlign = "center";
+    setArcadeFont(context, 10);
+    context.fillStyle = "#fff";
+    context.fillText("BOSS HP", GAME_WIDTH / 2, hpBarY - 6);
+    context.restore();
+
+    drawBossSpeechBubble(context, bx, by + 26);
+}
+
+// 建立一份新的 Boss 技能狀態，集中保存冷卻與技能特效倒數。
+function createBossSkillState() {
+    return {
+        timerMs: -1,
+        reverseControlsMs: 0,
+        reverseControlsTotalMs: 0,
+        inFlight: false,
+        pendingBurstDrops: null,
+        burstLeadMs: 0,
+        burstLeadTotalMs: 0,
+        burstAfterMs: 0,
+        burstAfterTotalMs: 0
+    };
+}
+
+// 取得目前遊戲共用的 Boss 技能狀態，若不存在就即時建立。
+function getBossSkillState() {
+    if (!game) return null;
+    if (!game.bossSkill) {
+        game.bossSkill = createBossSkillState();
+    }
+    return game.bossSkill;
+}
+
+// Boss 戰開始時重置技能狀態，並安排第一次技能延遲。
+function resetBossSkillForNewFight(initialDelayMs) {
+    game.bossSkill = createBossSkillState();
+    game.bossSkill.timerMs = Number.isFinite(initialDelayMs)
+        ? Math.max(0, initialDelayMs)
+        : 25000;
+    syncLogicalKeys();
+}
+
+// Boss 離場或遊戲結束時清空技能狀態與反轉控制效果。
+function cancelBossSkills() {
+    const state = getBossSkillState();
+    if (!state) return;
+
+    const wasReversed = state.reverseControlsMs > 0;
+    state.timerMs = -1;
+    state.reverseControlsMs = 0;
+    state.reverseControlsTotalMs = 0;
+    state.inFlight = false;
+    state.pendingBurstDrops = null;
+    state.burstLeadMs = 0;
+    state.burstLeadTotalMs = 0;
+    state.burstAfterMs = 0;
+    state.burstAfterTotalMs = 0;
+
+    if (wasReversed) {
+        syncLogicalKeys();
+    }
+}
+
+// 將後端給的 Boss 噴發資料轉成前端掉落物實例。
+function spawnBossBurstDrops(dropList = []) {
+    if (!Array.isArray(dropList) || dropList.length === 0) return 0;
+    const spawnOrigin = getBossBurstSpawnOrigin();
+
+    dropList.forEach((dropData) => {
+        drops.push(new DropData(
+            spawnOrigin.x,
+            spawnOrigin.y,
+            dropData.type,
+            {
+                vx: (dropData.vx ?? 0) * 0.62,
+                vy: (dropData.vy ?? 3.5) * 0.48,
+                renderLayer: "bossBurstFront"
+            }
+        ));
+    });
+
+    triggerJuice(spawnOrigin.x, spawnOrigin.y, "#ff5c7c", 24, 10, 320);
+    return dropList.length;
+}
+
+// 將後端抽出的 Boss 技能 payload 套用到前端狀態。
+function applyBossSkill(payload) {
+    const state = getBossSkillState();
+    if (!state) return;
+
+    state.timerMs = Number.isFinite(payload?.next_skill_ms)
+        ? Math.max(0, payload.next_skill_ms)
+        : 30000;
+
+    if (payload?.skill === "burst_drops") {
+        state.pendingBurstDrops = Array.isArray(payload.drops) ? payload.drops : [];
+        state.burstLeadMs = BOSS_BURST_PREP_MS;
+        state.burstLeadTotalMs = state.burstLeadMs;
+        state.burstAfterMs = 0;
+        state.burstAfterTotalMs = 0;
+        recordEvent("boss-skill-warning", "burst_drops", { count: state.pendingBurstDrops.length });
+        return;
+    }
+
+    if (payload?.skill === "reverse_controls") {
+        state.reverseControlsMs = Math.max(0, payload.duration_ms ?? 8000);
+        state.reverseControlsTotalMs = state.reverseControlsMs;
+        syncLogicalKeys();
+        recordEvent("boss-skill", "reverse_controls", { durationMs: state.reverseControlsMs });
+    }
+}
+
+// 向後端要求下一次 Boss 技能，並處理請求失敗時的保守冷卻。
+function requestBossSkill() {
+    const state = getBossSkillState();
+    if (!state || state.inFlight) return;
+    if (!game?.running || !game?.boss?.active) return;
+
+    state.inFlight = true;
+
+    fetch("/api/boss/skill", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" }
+    })
+        .then(async (res) => {
+            const data = await res.json().catch(() => ({}));
+            return { res, data };
+        })
+        .then(({ res, data }) => {
+            const latestState = getBossSkillState();
+            if (!latestState) return;
+
+            latestState.inFlight = false;
+            if (!res.ok) {
+                latestState.timerMs = 30000;
+                return;
+            }
+
+            applyBossSkill(data);
+        })
+        .catch((error) => {
+            const latestState = getBossSkillState();
+            if (latestState) {
+                latestState.inFlight = false;
+                latestState.timerMs = 30000;
+            }
+            console.error("Boss skill request failed", error);
+        });
+}
+
+// 每幀更新 Boss 技能倒數、反轉控制與噴發掉落流程。
+function updateBossSkills(dt) {
+    const state = getBossSkillState();
+    if (!state) return;
+
+    const bossActive = !!(game?.running && game?.boss?.active);
+    if (!bossActive) {
+        if (state.timerMs >= 0 || state.reverseControlsMs > 0 || state.inFlight) {
+            cancelBossSkills();
+        }
+        return;
+    }
+
+    if (state.reverseControlsMs > 0) {
+        state.reverseControlsMs = Math.max(0, state.reverseControlsMs - dt);
+        if (state.reverseControlsMs <= 0) {
+            state.reverseControlsTotalMs = 0;
+            syncLogicalKeys();
+        }
+    }
+
+    if (state.burstLeadMs > 0) {
+        state.burstLeadMs = Math.max(0, state.burstLeadMs - dt);
+        if (state.burstLeadMs <= 0 && state.pendingBurstDrops) {
+            const spawned = spawnBossBurstDrops(state.pendingBurstDrops);
+            state.pendingBurstDrops = null;
+            state.burstAfterMs = BOSS_BURST_ACTIVE_MS;
+            state.burstAfterTotalMs = state.burstAfterMs;
+            state.burstLeadTotalMs = 0;
+            if (spawned > 0) {
+                recordEvent("boss-skill", "burst_drops", { count: spawned });
+            }
+        }
+    } else if (state.burstAfterMs > 0) {
+        state.burstAfterMs = Math.max(0, state.burstAfterMs - dt);
+        if (state.burstAfterMs <= 0) {
+            state.burstAfterTotalMs = 0;
+        }
+    }
+
+    if (state.timerMs > 0) {
+        state.timerMs -= dt;
+    }
+
+    if (state.timerMs <= 0 && !state.inFlight) {
+        requestBossSkill();
+    }
+}
+
+/* =========================================================================
+ *  Boss 台詞狀態
+ * =======================================================================*/
+
+// 建立一份新的 Boss 台詞狀態，讓每場 Boss 戰都能從乾淨狀態開始。
+function createBossTauntState() {
+    return {
+        cooldownMs: 0,        // 台詞顯示完後的冷卻時間。
+        timedTimerMs: -1,     // 定時觸發倒數，-1 代表尚未啟動。
+        bufferFired: {},      // 記錄高 Buffer 觸發點是否已用過。
+        comboFired: {},       // 記錄 Combo 里程碑是否已用過。
+        pendingContext: null, // LLM 忙碌時暫存最新一次請求。
+        inFlight: false,      // 是否仍在等待 LLM 回應。
+        requestSeq: 0,        // 用來淘汰過期回應的序號。
+        displayQueue: [],     // 等待顯示的台詞佇列。
+        currentMessage: null  // 目前正在顯示的台詞內容。
+    };
+}
+
+// 取得目前遊戲共用的 Boss 台詞狀態，若不存在就即時建立。
 function getBossTauntState() {
     if (!game) return null;
     if (!game.bossTaunt) {
@@ -128,94 +410,78 @@ function getBossTauntState() {
     return game.bossTaunt;
 }
 
-// Boss 戰開始時呼叫：清掉舊狀態並排第一次定時觸發
+// 新 Boss 戰開始時重置台詞狀態，並重新安排第一次定時嘲諷。
 function resetBossTauntForNewFight() {
     game.bossTaunt = createBossTauntState();
-    const state = game.bossTaunt;
-    state.timedTimerMs = randomBetween(BOSS_TAUNT_TIMED_MIN_MS, BOSS_TAUNT_TIMED_MAX_MS);
-    state.lastBossPhase = game.boss?.phase ?? null;
+    game.bossTaunt.timedTimerMs = randomBetween(BOSS_TAUNT_TIMED_MIN_MS, BOSS_TAUNT_TIMED_MAX_MS);
 }
 
-// Boss 死亡 或 Game Over 時呼叫：清空所有 queue、忽略 in-flight、停止後續觸發
-function cancelBossTaunts(reason = "manual") {
+// Boss 離場或 Game Over 時清空台詞佇列，避免上一場訊息殘留。
+function cancelBossTaunts() {
     const state = getBossTauntState();
     if (!state) return;
-    state.requestSeq += 1; // 讓任何 in-flight 回應失效
+
+    state.requestSeq += 1;
     state.inFlight = false;
     state.pendingContext = null;
     state.displayQueue = [];
     state.currentMessage = null;
     state.cooldownMs = 0;
-    state.timedTimerMs = -1; // 停止定時
+    state.timedTimerMs = -1;
 }
 
-// 主迴圈每幀呼叫一次
+// 每禎更新 Boss 台詞系統，只保留定時與顯示節奏，不再偵測階段切換。
 function updateBossTaunt(dt) {
     const state = getBossTauntState();
     if (!state) return;
 
     const bossActive = !!(game.boss && game.boss.active);
     if (!game.running || !bossActive) {
-        // Boss 不在場上 / Game Over → 停止狀態機（但保留 currentMessage 顯示？）
-        // 規格：Boss 死或玩家死後不再觸發，且清空所有 queue 與已有訊息
         if (state.currentMessage || state.displayQueue.length || state.inFlight || state.pendingContext) {
-            cancelBossTaunts(game.running ? "boss-inactive" : "game-over");
+            cancelBossTaunts();
         }
         return;
     }
 
-    // 1. 倒數冷卻
     if (state.cooldownMs > 0) {
         state.cooldownMs = Math.max(0, state.cooldownMs - dt);
     }
 
-    // 2. 偵測 Boss 階段切換
-    const phase = game.boss.phase;
-    if (state.lastBossPhase && phase && phase !== state.lastBossPhase) {
-        requestBossTaunt("phase_change");
-    }
-    state.lastBossPhase = phase;
-
-    // 3. 定時觸發倒數
     if (state.timedTimerMs > 0) {
         state.timedTimerMs -= dt;
         if (state.timedTimerMs <= 0) {
             requestBossTaunt("timed");
-            // 重新排下一次定時（即便這次因冷卻而 noop，仍要排下次）
             state.timedTimerMs = randomBetween(BOSS_TAUNT_TIMED_MIN_MS, BOSS_TAUNT_TIMED_MAX_MS);
         }
     }
 
-    // 4. 顯示流程：currentMessage 倒數 / 從 queue 取下一則
     if (state.currentMessage) {
         const elapsed = visualAnimMs - state.currentMessage.startMs;
         if (elapsed >= BOSS_TAUNT_DISPLAY_MS) {
             state.currentMessage = null;
-            // 顯示結束才開始冷卻
             state.cooldownMs = BOSS_TAUNT_COOLDOWN_MS;
         }
     } else if (state.displayQueue.length > 0 && state.cooldownMs <= 0) {
-        // 即便 queue 內已有預先回傳的訊息，也必須等冷卻歸零才能播放下一則
         const next = state.displayQueue.shift();
         state.currentMessage = { text: next, startMs: visualAnimMs };
     }
 }
 
-// 推導目前情境應該用的 tone
+// 依目前玩家狀態推導台詞語氣，Buffer 高時偏嘲諷，Combo 高時偏稱讚。
 function deriveBossTauntTone() {
     const buffer = game?.buffer ?? 0;
     const combo = game?.combo ?? 0;
-    if (buffer >= BOSS_TAUNT_BUFFER_HIGH) return "taunt";   // Buffer 優先
+    if (buffer >= BOSS_TAUNT_BUFFER_HIGH) return "taunt";
     if (combo >= BOSS_TAUNT_COMBO_HIGH) return "praise";
-    return "taunt"; // 預設
+    return "taunt";
 }
 
-// 蒐集目前的遊戲情境快照
+// 建立送往後端的台詞上下文，單血條版只保留血量百分比，不再傳 Boss 階段。
 function buildBossTauntContext(reason) {
     const boss = game?.boss;
-    const hpPercent = boss && boss.maxHp ? Math.max(0, Math.min(1, boss.hp / boss.maxHp)) : 1;
+    const hpPercent = boss?.maxHp ? Math.max(0, Math.min(1, boss.hp / boss.maxHp)) : 1;
+
     return {
-        bossPhase: boss?.phase ?? "STORM",
         bossHpPercent: Number(hpPercent.toFixed(2)),
         playerScore: game?.score ?? 0,
         buffer: Math.round(game?.buffer ?? 0),
@@ -252,47 +518,10 @@ function requestBossTaunt(reason) {
     sendBossTauntRequest(tone, context);
 }
 
-// 實際送 LLM 請求；含 10 秒逾時與 seq 校驗
-function sendBossTauntRequest(tone, context) {
-    const state = getBossTauntState();
-    if (!state) return;
-
-    state.inFlight = true;
-    state.requestSeq += 1;
-    const mySeq = state.requestSeq;
-    const myGame = game; // 用來偵測 game reset
-
-    const controller = (typeof AbortController !== "undefined") ? new AbortController() : null;
-    const timeoutId = setTimeout(() => {
-        // 逾時：標記失敗，不顯示，不算冷卻
-        if (controller) controller.abort();
-        finalizeBossTauntRequest(myGame, mySeq, null);
-    }, BOSS_TAUNT_LLM_TIMEOUT_MS);
-
-    fetch("/api/boss/taunt", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tone, context }),
-        signal: controller ? controller.signal : undefined
-    })
-        .then((res) => res.json())
-        .then((data) => {
-            clearTimeout(timeoutId);
-            const reply = typeof data?.reply === "string" ? data.reply.trim() : "";
-            // 前端再做一次 20 字防呆
-            const valid = reply && [...reply].length <= BOSS_TAUNT_MAX_CHARS;
-            finalizeBossTauntRequest(myGame, mySeq, valid ? reply : null);
-        })
-        .catch(() => {
-            clearTimeout(timeoutId);
-            finalizeBossTauntRequest(myGame, mySeq, null);
-        });
-}
-
-// LLM 回應（成功 / 失敗 / 逾時）統一收尾
+// 統一收尾一次 LLM 回應，避免過期請求把新狀態蓋掉。
 function finalizeBossTauntRequest(originalGame, mySeq, reply) {
-    // game 已重置 或 已被取消 → 直接丟棄
     if (originalGame !== game) return;
+
     const state = getBossTauntState();
     if (!state) return;
     if (mySeq !== state.requestSeq) return;
@@ -302,9 +531,7 @@ function finalizeBossTauntRequest(originalGame, mySeq, reply) {
     if (reply) {
         state.displayQueue.push(reply);
     }
-    // 失敗 / 逾時 / 超字 → 不顯示、不算冷卻（cooldownMs 維持不變）
 
-    // 若等待期間累積了 pending（合併後的最新一筆），現在送出
     if (state.pendingContext && game.running && game.boss && game.boss.active) {
         const { tone, context } = state.pendingContext;
         state.pendingContext = null;
@@ -320,6 +547,7 @@ function finalizeBossTauntRequest(originalGame, mySeq, reply) {
 function _splitBossBubbleLines(text, maxCharsPerLine) {
     const chars = [...(text || "")];
     if (chars.length === 0) return [];
+
     const lines = [];
     for (let i = 0; i < chars.length; i += maxCharsPerLine) {
         lines.push(chars.slice(i, i + maxCharsPerLine).join(""));
@@ -351,17 +579,16 @@ function drawBossSpeechBubble(context, bossX, bossY) {
 
     const padding = 10;
     const lineHeight = 16;
-    const fontSize = 10;
-    const longestChars = Math.max(...lines.map((l) => [...l].length));
+    const fontSize = 14;
+    const longestChars = Math.max(...lines.map((line) => [...line].length));
     const bubbleWidth = Math.min(220, Math.max(80, longestChars * fontSize + padding * 2));
     const bubbleHeight = lines.length * lineHeight + padding * 2;
 
-    // 預設放右側，超出畫面時放左側
-    const bossW = 120;
-    let bubbleX = bossX + bossW + 14;
+    const bossW = SPRITE_CONFIG?.boss?.draw?.w ?? 120;
+    let bubbleX = bossX + bossW - 50;
     let pointerDir = "left"; // 三角形朝向 Boss
     if (bubbleX + bubbleWidth + 4 > GAME_WIDTH) {
-        bubbleX = bossX - bubbleWidth - 14;
+        bubbleX = bossX - bubbleWidth - 78;
         pointerDir = "right";
     }
     const bubbleY = bossY - 4;
@@ -369,7 +596,7 @@ function drawBossSpeechBubble(context, bossX, bossY) {
     context.save();
     context.globalAlpha = alpha;
 
-    // 外框（青色科技感）
+    // 外框
     context.fillStyle = "rgba(8, 18, 28, 0.92)";
     context.strokeStyle = "#32d6ff";
     context.lineWidth = 2;
@@ -402,18 +629,18 @@ function drawBossSpeechBubble(context, bossX, bossY) {
     context.stroke();
 
     // 文字
-    context.shadowBlur = 0;
     context.textAlign = "left";
     context.textBaseline = "top";
     setArcadeFont(context, fontSize);
     context.fillStyle = "#eaffff";
-    lines.forEach((line, idx) => {
-        context.fillText(line, bubbleX + padding, bubbleY + padding + idx * lineHeight);
+    lines.forEach((line, index) => {
+        context.fillText(line, bubbleX + padding, bubbleY + padding + index * lineHeight);
     });
 
     context.restore();
 }
 
+// 繪製圓角矩形，供台詞泡泡共用。
 function _drawRoundedRect(context, x, y, w, h, r) {
     const radius = Math.min(r, w / 2, h / 2);
     context.beginPath();
@@ -433,15 +660,16 @@ function _drawRoundedRect(context, x, y, w, h, r) {
  *  外部事件 hook（供 gameplay.js 呼叫）
  * =======================================================================*/
 
-// Flush 使用時呼叫
+// Flush 完成時通知 Boss 台詞系統評估是否要說話。
 function notifyBossTauntFlush() {
     requestBossTaunt("flush");
 }
 
-// 玩家 Combo 變動時呼叫；首次達到 5 / 10 觸發
+// Combo 跨過指定門檻時只觸發一次，避免短時間內重複洗版。
 function notifyBossTauntCombo(currentCombo) {
     const state = getBossTauntState();
     if (!state) return;
+
     BOSS_TAUNT_COMBO_TRIGGERS.forEach((threshold) => {
         if (currentCombo >= threshold && !state.comboFired[threshold]) {
             state.comboFired[threshold] = true;
@@ -450,14 +678,65 @@ function notifyBossTauntCombo(currentCombo) {
     });
 }
 
-// Buffer 變動時呼叫；首次跨越 70 / 90 觸發
+// Buffer 跨過高風險門檻時只觸發一次，避免每禎都重送請求。
 function notifyBossTauntBuffer(currentBuffer) {
     const state = getBossTauntState();
     if (!state) return;
+
     BOSS_TAUNT_BUFFER_TRIGGERS.forEach((threshold) => {
         if (currentBuffer >= threshold && !state.bufferFired[threshold]) {
             state.bufferFired[threshold] = true;
             requestBossTaunt("buffer_threshold");
         }
     });
+}
+
+// 實際送出台詞請求，並保留完整的錯誤資訊方便除錯。
+function sendBossTauntRequest(tone, context) {
+    const state = getBossTauntState();
+    if (!state) return;
+
+    state.inFlight = true;
+    state.requestSeq += 1;
+    const mySeq = state.requestSeq;
+    const myGame = game;
+
+    const controller = (typeof AbortController !== "undefined") ? new AbortController() : null;
+    const timeoutId = setTimeout(() => {
+        if (controller) controller.abort();
+        finalizeBossTauntRequest(myGame, mySeq, null);
+    }, BOSS_TAUNT_LLM_TIMEOUT_MS);
+
+    fetch("/api/boss/taunt", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tone, context }),
+        signal: controller ? controller.signal : undefined
+    })
+        .then(async (res) => {
+            const data = await res.json().catch(() => ({}));
+            return { res, data };
+        })
+        .then(({ res, data }) => {
+            clearTimeout(timeoutId);
+
+            if (!res.ok || !data?.ok) {
+                console.warn("Boss taunt unavailable", {
+                    status: res.status,
+                    error: data?.error ?? `http_${res.status}`,
+                    detail: data?.detail ?? null,
+                    backend: data?.backend ?? null,
+                    model: data?.model ?? null
+                });
+            }
+
+            const reply = typeof data?.reply === "string" ? data.reply.trim() : "";
+            const valid = !!data?.ok && reply && [...reply].length <= BOSS_TAUNT_MAX_CHARS;
+            finalizeBossTauntRequest(myGame, mySeq, valid ? reply : null);
+        })
+        .catch((error) => {
+            clearTimeout(timeoutId);
+            console.error("Boss taunt request failed", error);
+            finalizeBossTauntRequest(myGame, mySeq, null);
+        });
 }
