@@ -20,6 +20,8 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE_DIR, "config.ini")
 
 BOSS_TAUNT_MAX_CHARS = 25
+LLM_TIMEOUT_SECONDS = 8 # Gemini API 的預設 timeout 是 10 秒，改成 8 秒已避免過度等待
+LLM_MAX_RETRIES = 1 # LangChain 的 Gemini client 預設重試次數是 6 次，改成重試 1 次以避免過度等待
 
 # 延遲建立 LLM client 時要共用的鎖、實例與停用原因。
 _llm_lock = threading.Lock()
@@ -59,6 +61,18 @@ def _resolve_model(cfg: ConfigParser) -> str:
     return "gemini-3-flash-preview"
 
 
+def _classify_llm_http_status(message: str) -> int | None:
+    """把 Gemini / LangChain 常見錯誤文字轉成前端可理解的 HTTP 狀態。"""
+    normalized = (message or "").upper()
+    if "429" in normalized or "RESOURCE_EXHAUSTED" in normalized:
+        return 429
+    if "503" in normalized or "UNAVAILABLE" in normalized:
+        return 503
+    if "504" in normalized or "TIMEOUT" in normalized or "TIMED OUT" in normalized or "DEADLINE_EXCEEDED" in normalized:
+        return 504
+    return None
+
+
 def get_llm():
     """延後初始化 LangChain 的 Gemini client，避免啟動時直接失敗。"""
     global _llm_instance, _llm_disabled_reason
@@ -83,6 +97,8 @@ def get_llm():
                 model=_resolve_model(cfg),
                 google_api_key=api_key,
                 temperature=0.95,
+                timeout=LLM_TIMEOUT_SECONDS,
+                max_retries=LLM_MAX_RETRIES,
             )
             _llm_disabled_reason = None
         except Exception as exc:
@@ -214,10 +230,7 @@ def generate_boss_taunt(context: dict[str, Any], tone: str) -> dict[str, Any]:
         print(f"[llm_service] boss taunt LLM error: {message}", flush=True)
         result["error"] = "langchain_invoke_failed"
         result["detail"] = message
-        if "429" in message or "RESOURCE_EXHAUSTED" in message:
-            result["httpStatus"] = 429
-        elif "503" in message or "UNAVAILABLE" in message:
-            result["httpStatus"] = 503
+        result["httpStatus"] = _classify_llm_http_status(message)
         return result
 
     raw = _message_content_to_str(getattr(invoke_result, "content", "")).strip()
@@ -307,10 +320,7 @@ def generate_battle_report_analysis(analysis_payload: dict[str, Any]) -> dict[st
         print(f"[llm_service] report analysis LLM error: {message}", flush=True)
         result["error"] = "langchain_invoke_failed"
         result["detail"] = message
-        if "429" in message or "RESOURCE_EXHAUSTED" in message:
-            result["httpStatus"] = 429
-        elif "503" in message or "UNAVAILABLE" in message:
-            result["httpStatus"] = 503
+        result["httpStatus"] = _classify_llm_http_status(message)
         return result
 
     raw = _message_content_to_str(getattr(invoke_result, "content", "")).strip()
