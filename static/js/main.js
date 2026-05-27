@@ -285,6 +285,73 @@ const canvas = document.getElementById("gameCanvas");
 const ctx = canvas.getContext("2d");
 ctx.imageSmoothingEnabled = false;
 
+
+// 建立戰報寄送需要的按鈕與輸入框；舊版 HTML 沒有這些節點時會自動補上。
+function ensureBattleReportControls() {
+    const panel = document.getElementById("gameOverPanel");
+    const restartButton = document.getElementById("restartButton");
+    if (!panel || !restartButton) return {};
+
+    restartButton.textContent = "RESTART";
+    restartButton.classList.add("game-over-action-button");
+
+    let actions = panel.querySelector(".game-over-actions");
+    if (!actions) {
+        actions = document.createElement("div");
+        actions.className = "game-over-actions";
+        restartButton.parentNode.insertBefore(actions, restartButton);
+        actions.appendChild(restartButton);
+    }
+
+    let saveReportButton = document.getElementById("saveReportButton");
+    if (!saveReportButton) {
+        saveReportButton = document.createElement("button");
+        saveReportButton.id = "saveReportButton";
+        saveReportButton.type = "button";
+        saveReportButton.className = "game-over-action-button game-over-action-button--report";
+        saveReportButton.textContent = "SAVE REPORT";
+        actions.appendChild(saveReportButton);
+    }
+
+    let reportDialog = document.getElementById("reportDialog");
+    if (!reportDialog) {
+        reportDialog = document.createElement("div");
+        reportDialog.id = "reportDialog";
+        reportDialog.className = "report-dialog hidden";
+        reportDialog.setAttribute("role", "dialog");
+        reportDialog.setAttribute("aria-modal", "true");
+        reportDialog.setAttribute("aria-labelledby", "reportDialogTitle");
+        reportDialog.innerHTML = `
+            <form class="report-dialog__form" id="reportForm">
+                <h3 id="reportDialogTitle">Battle Report</h3>
+                <p id="reportDialogMessage">輸入您的電子郵件寄送戰報</p>
+                <input id="reportEmailInput" type="email" autocomplete="email" placeholder="player@example.com" required>
+                <p class="report-dialog__feedback" id="reportFeedback" aria-live="polite"></p>
+                <div class="report-dialog__actions">
+                    <button type="button" id="reportCancelButton">CANCEL</button>
+                    <button type="submit" id="reportSubmitButton">SEND</button>
+                    <button class="hidden" type="button" id="reportCloseButton">CLOSE</button>
+                </div>
+            </form>
+        `;
+        panel.appendChild(reportDialog);
+    }
+
+    return {
+        saveReportButton,
+        reportDialog,
+        reportForm: document.getElementById("reportForm"),
+        reportEmailInput: document.getElementById("reportEmailInput"),
+        reportDialogMessage: document.getElementById("reportDialogMessage"),
+        reportFeedback: document.getElementById("reportFeedback"),
+        reportCancelButton: document.getElementById("reportCancelButton"),
+        reportSubmitButton: document.getElementById("reportSubmitButton"),
+        reportCloseButton: document.getElementById("reportCloseButton")
+    };
+}
+
+const battleReportControls = ensureBattleReportControls();
+
 // HUD 與操作面板需要用到的 DOM 節點。
 const ui = {
     score: document.getElementById("scoreValue"),
@@ -299,6 +366,15 @@ const ui = {
     gameOverPanel: document.getElementById("gameOverPanel"),
     finalStats: document.getElementById("finalStats"),
     restartButton: document.getElementById("restartButton"),
+    saveReportButton: battleReportControls.saveReportButton,
+    reportDialog: battleReportControls.reportDialog,
+    reportForm: battleReportControls.reportForm,
+    reportEmailInput: battleReportControls.reportEmailInput,
+    reportDialogMessage: battleReportControls.reportDialogMessage,
+    reportFeedback: battleReportControls.reportFeedback,
+    reportCancelButton: battleReportControls.reportCancelButton,
+    reportSubmitButton: battleReportControls.reportSubmitButton,
+    reportCloseButton: battleReportControls.reportCloseButton,
     arcadeStick: document.getElementById("arcadeStick"),
     arcadeButtonA: document.getElementById("arcadeButtonA"),
     arcadeButtonB: document.getElementById("arcadeButtonB"),
@@ -627,6 +703,7 @@ function createGameState() {
         nextMapSwapScore: MAP_SWAP_SCORE_STEP,
         mapTransition: null,
         elapsedMs: 0,
+        endedAt: null, // 結算畫面與 PDF 戰報共用的 JS 結束時間。
         history: [],
         typeStats: Object.fromEntries(Object.keys(DATA_TYPES).map((key) => [key, { absorbed: 0, discarded: 0, buffer: 0 }]))
     };
@@ -920,6 +997,12 @@ function registerGameEvents() {
             console.error(error);
         });
     });
+
+    // 戰報寄送流程在 render.js，這裡只綁定結算畫面的互動事件。
+    ui.saveReportButton?.addEventListener("click", openReportDialog);
+    ui.reportForm?.addEventListener("submit", submitBattleReport);
+    ui.reportCancelButton?.addEventListener("click", closeReportDialog);
+    ui.reportCloseButton?.addEventListener("click", closeReportDialog);
 }
 
 // 啟動素材載入、事件綁定與遊戲入口流程

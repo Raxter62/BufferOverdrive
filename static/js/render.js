@@ -289,8 +289,46 @@ function drawTypeRadarChart(container, typeStats) {
     );
 }
 
-// 建立 Game Over 結算面板的統計文字與兩張 Plotly 圖表。
+
+// 將毫秒轉成結算畫面與戰報 PDF 使用的遊玩時間。
+function formatReportDuration(ms) {
+    const totalSeconds = Math.max(0, Math.floor((Number(ms) || 0) / 1000));
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
+// 使用瀏覽器 JS 時間格式化戰報時間，符合使用者要求的前端時間來源。
+function formatReportDateTime(date) {
+    const safeDate = date instanceof Date ? date : new Date(date || Date.now());
+    return safeDate.toLocaleString("zh-TW", {
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false
+    });
+}
+
+// 建立 Game Over 結算面板統計與兩張 Plotly 圖表。
 function renderGameOverPanel() {
+    const endedAt = game.endedAt instanceof Date ? game.endedAt : new Date();
+    game.endedAt = endedAt;
+    const endedAtText = formatReportDateTime(endedAt);
+    const durationText = formatReportDuration(game.elapsedMs);
+    game.reportSummary = {
+        score: game.score,
+        handled: game.handled,
+        absorbed: game.absorbed,
+        discarded: game.discarded,
+        autoAbsorbed: game.autoAbsorbed,
+        flushes: game.flushes,
+        endedAt: endedAtText,
+        duration: durationText
+    };
+
     ui.finalStats.innerHTML = `
         <div style="font-size:16px; margin-bottom: 8px; color:var(--text); letter-spacing: 2px;">
             FINAL SCORE <strong style="color:var(--cyan); font-size:26px;">${game.score}</strong>
@@ -303,6 +341,14 @@ function renderGameOverPanel() {
             <span>flush次數: <strong style="color:#fff">${game.flushes}</strong></span>
         </div>
     `;
+
+    // 把 JS 產生的結束時間顯示在結算畫面，並同步進 PDF 戰報。
+    ui.finalStats.insertAdjacentHTML("beforeend", `
+        <div class="game-over-time">
+            <span>ENDED: <strong>${endedAtText}</strong></span>
+            <span>DURATION: <strong>${durationText}</strong></span>
+        </div>
+    `);
 
     const chartsContainer = document.createElement("div");
     chartsContainer.style.display = "flex";
@@ -1318,4 +1364,145 @@ function drawEffectParticles(context) {
     });
 
     context.restore();
+}
+
+// 顯示輸入 email 的戰報寄送視窗。
+function openReportDialog() {
+    if (!ui.reportDialog || !game || game.running) return;
+    ui.reportDialog.classList.remove("hidden");
+    ui.reportDialogMessage.textContent = "輸入您的電子郵件寄送戰報";
+    ui.reportEmailInput.value = "";
+    ui.reportEmailInput.classList.remove("hidden");
+    ui.reportEmailInput.disabled = false;
+    ui.reportSubmitButton.disabled = false;
+    ui.reportCancelButton.classList.remove("hidden");
+    ui.reportSubmitButton.classList.remove("hidden");
+    ui.reportCloseButton.classList.add("hidden");
+    setReportFeedback("", "");
+    setTimeout(() => ui.reportEmailInput.focus(), 0);
+}
+
+// 關閉寄送視窗並回到原本的結算畫面。
+function closeReportDialog() {
+    if (!ui.reportDialog) return;
+    ui.reportDialog.classList.add("hidden");
+    ui.saveReportButton.disabled = false;
+}
+
+function setReportFeedback(message, state) {
+    if (!ui.reportFeedback) return;
+    ui.reportFeedback.textContent = message;
+    ui.reportFeedback.classList.toggle("is-error", state === "error");
+    ui.reportFeedback.classList.toggle("is-success", state === "success");
+}
+
+function setReportSending(isSending) {
+    ui.saveReportButton.disabled = isSending;
+    ui.reportSubmitButton.disabled = isSending;
+    ui.reportEmailInput.disabled = isSending;
+    setReportFeedback(isSending ? "正在產生 PDF 並寄送..." : "", "");
+}
+
+function buildBattleReportFilename() {
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    return `buffer-overdrive-report-${stamp}.pdf`;
+}
+
+async function waitForReportRenderReady() {
+    if (document.fonts?.ready) {
+        await document.fonts.ready;
+    }
+
+    // 等待 Plotly SVG 與瀏覽器 layout 完成，避免 PDF 截到空白圖表。
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    await new Promise((resolve) => setTimeout(resolve, 180));
+}
+
+async function generateBattleReportPdfBase64() {
+    if (typeof html2canvas === "undefined" || !window.jspdf?.jsPDF) {
+        throw new Error("PDF library unavailable");
+    }
+
+    await waitForReportRenderReady();
+
+    ui.gameOverPanel.classList.add("is-exporting-report");
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+
+    try {
+        const canvas = await html2canvas(ui.gameOverPanel, {
+            backgroundColor: "#071018",
+            scale: 2,
+            useCORS: true
+        });
+
+        const { jsPDF } = window.jspdf;
+        const pdf = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
+        const pageWidth = pdf.internal.pageSize.getWidth();
+        const pageHeight = pdf.internal.pageSize.getHeight();
+        const margin = 24;
+        const ratio = Math.min(
+            (pageWidth - margin * 2) / canvas.width,
+            (pageHeight - margin * 2) / canvas.height
+        );
+        const imageWidth = canvas.width * ratio;
+        const imageHeight = canvas.height * ratio;
+        const imageX = (pageWidth - imageWidth) / 2;
+        const imageY = (pageHeight - imageHeight) / 2;
+
+        // PDF 以整張結算畫面截圖呈現，確保圖表、分數、時間都被包含。
+        pdf.setFillColor(7, 16, 24);
+        pdf.rect(0, 0, pageWidth, pageHeight, "F");
+        pdf.addImage(canvas.toDataURL("image/png"), "PNG", imageX, imageY, imageWidth, imageHeight);
+
+        return pdf.output("datauristring").split(",", 2)[1];
+    } finally {
+        ui.gameOverPanel.classList.remove("is-exporting-report");
+    }
+}
+
+async function submitBattleReport(event) {
+    event.preventDefault();
+    if (!ui.reportEmailInput || !game || game.running) return;
+
+    const email = ui.reportEmailInput.value.trim();
+    if (!email) {
+        setReportFeedback("請輸入電子郵件。", "error");
+        return;
+    }
+
+    setReportSending(true);
+
+    try {
+        const filename = buildBattleReportFilename();
+        const pdfBase64 = await generateBattleReportPdfBase64();
+        const response = await fetch("/api/send_report", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                email,
+                filename,
+                pdfBase64,
+                summary: game.reportSummary || {}
+            })
+        });
+        const data = await response.json().catch(() => ({}));
+
+        if (!response.ok) {
+            throw new Error(data.detail || "Report email failed");
+        }
+
+        ui.reportDialogMessage.textContent = "寄送成功";
+        ui.reportEmailInput.classList.add("hidden");
+        ui.reportCancelButton.classList.add("hidden");
+        ui.reportSubmitButton.classList.add("hidden");
+        ui.reportCloseButton.classList.remove("hidden");
+        setReportFeedback("戰報已寄出，請查看您的信箱。", "success");
+    } catch (error) {
+        console.error("Battle report failed", error);
+        setReportFeedback(error.message || "寄送失敗，請稍後再試。", "error");
+    } finally {
+        ui.saveReportButton.disabled = false;
+        ui.reportSubmitButton.disabled = false;
+        ui.reportEmailInput.disabled = false;
+    }
 }

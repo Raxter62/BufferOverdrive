@@ -323,6 +323,7 @@ function endGame() {
     freezeBannerStartMs = null;
     executionBannerPositions.reverse = 105;
     executionBannerPositions.warning = 105;
+    game.endedAt = new Date(); // 使用瀏覽器 JS 時間，讓結算畫面、PDF、log 一致。
     player.triggerDeath();
     queueScoreForLeaderboard(game.score);
 
@@ -337,6 +338,7 @@ function endGame() {
             discarded: game.discarded,
             autoAbsorbed: game.autoAbsorbed,
             flushes: game.flushes,
+            endedAt: game.endedAt.toISOString(),
             history: game.history,
             typeStats: game.typeStats
         })

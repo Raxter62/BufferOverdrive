@@ -5,6 +5,7 @@ import math
 from flask import Flask, render_template, request, jsonify
 
 from llm_service import generate_boss_taunt
+from report_mailer import ReportMailError, send_battle_report
 from storage import StorageError, append_game_log, load_leaderboard, save_leaderboard
 
 # Flask 應用程式實例
@@ -404,6 +405,30 @@ def log_event():
             "error": "storage_unavailable",
             "detail": str(exc)
         }), 503
+
+@app.route('/api/send_report', methods=['POST'])
+def send_report():
+    """接收前端產生的 PDF 戰報，並透過 Resend 寄到玩家信箱。"""
+    data = request.get_json(silent=True) or {}
+
+    try:
+        result = send_battle_report(
+            recipient_email=data.get("email", ""),
+            pdf_base64=data.get("pdfBase64", ""),
+            filename=data.get("filename"),
+            summary=data.get("summary") if isinstance(data.get("summary"), dict) else {},
+        )
+        return jsonify({
+            "status": "ok",
+            "id": result.get("id") if isinstance(result, dict) else None
+        })
+    except ReportMailError as exc:
+        app.logger.exception("Battle report email failed")
+        return jsonify({
+            "status": "error",
+            "error": "report_email_failed",
+            "detail": str(exc)
+        }), exc.status_code
 
 if __name__ == '__main__':
     # Railway 會提供 PORT；本機開發沒有 PORT 時仍使用 5000。
