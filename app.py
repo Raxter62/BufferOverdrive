@@ -4,9 +4,11 @@ import random
 import math
 from flask import Flask, render_template, request, jsonify
 
+from battle_report_analysis import build_analysis_payload
+from llm_service import generate_battle_report_analysis
 from llm_service import generate_boss_taunt
 from report_mailer import ReportMailError, send_battle_report
-from storage import StorageError, append_game_log, load_leaderboard, save_leaderboard
+from storage import StorageError, append_game_log, load_game_log, load_leaderboard, save_leaderboard
 
 # Flask 應用程式實例
 app = Flask(__name__)
@@ -396,8 +398,8 @@ def log_event():
     """將單場遊戲的統計結果追加寫入紀錄檔。"""
     # 遊戲結束紀錄格式不改，部署後只把寫入位置換成 Supabase。
     try:
-        append_game_log(request.get_json(silent=True) or {})
-        return jsonify({"status": "ok"})
+        log_id = append_game_log(request.get_json(silent=True) or {})
+        return jsonify({"status": "ok", "logId": log_id})
     except StorageError as exc:
         app.logger.exception("Game log storage failed")
         return jsonify({
@@ -406,10 +408,34 @@ def log_event():
             "detail": str(exc)
         }), 503
 
+
+def build_email_report_analysis(log_id):
+    """從 Supabase 單局 log 產生 email 內的戰報分析文字；失敗時不阻擋寄信。"""
+    if not log_id:
+        return None
+
+    try:
+        game_log = load_game_log(log_id)
+        if not game_log:
+            return None
+
+        analysis_payload = build_analysis_payload(game_log)
+        result = generate_battle_report_analysis(analysis_payload)
+        if result.get("ok") and result.get("analysis"):
+            return result["analysis"]
+
+        app.logger.warning("Battle report analysis unavailable: %s", result.get("error"))
+        return None
+    except Exception:
+        app.logger.exception("Battle report analysis failed")
+        return None
+
+
 @app.route('/api/send_report', methods=['POST'])
 def send_report():
     """接收前端產生的 PDF 戰報，並透過 Resend 寄到玩家信箱。"""
     data = request.get_json(silent=True) or {}
+    analysis = build_email_report_analysis(data.get("logId"))
 
     try:
         result = send_battle_report(
@@ -417,6 +443,7 @@ def send_report():
             pdf_base64=data.get("pdfBase64", ""),
             filename=data.get("filename"),
             summary=data.get("summary") if isinstance(data.get("summary"), dict) else {},
+            analysis=analysis,
         )
         return jsonify({
             "status": "ok",

@@ -78,13 +78,26 @@ def save_leaderboard(scores: list[Any]) -> None:
     _save_leaderboard_to_file(safe_scores)
 
 
-def append_game_log(payload: Any) -> None:
+def append_game_log(payload: Any) -> int | None:
     """新增一筆遊戲結束紀錄；Supabase 使用 JSONB，本機則延續 jsonl 格式。"""
     safe_payload = payload if payload is not None else {}
     if _has_supabase_config():
-        _append_game_log_to_supabase(safe_payload)
-        return
+        return _append_game_log_to_supabase(safe_payload)
     _append_game_log_to_file(safe_payload)
+    return None
+
+
+def load_game_log(log_id: Any) -> dict[str, Any] | None:
+    """從 Supabase 讀取單筆遊戲 log，給戰報分析師做分析。"""
+    if not _has_supabase_config():
+        return None
+
+    try:
+        safe_id = int(log_id)
+    except (TypeError, ValueError):
+        return None
+
+    return _load_game_log_from_supabase(safe_id)
 
 
 def _load_leaderboard_from_file() -> list[Any]:
@@ -158,10 +171,41 @@ def _save_leaderboard_to_supabase(scores: list[Any]) -> None:
         raise StorageError("寫入 Supabase 排行榜失敗，請確認資料表與金鑰權限。") from exc
 
 
-def _append_game_log_to_supabase(payload: Any) -> None:
-    """正式部署用：把整份遊戲結束資料寫成 JSONB，避免改動前端統計格式。"""
+# 重新定義 Supabase log 寫入函式：保留同名函式可避免大幅改動既有呼叫點。
+def _append_game_log_to_supabase(payload: Any) -> int | None:
+    """正式部署用：新增遊戲紀錄並回傳 Supabase game_logs.id。"""
     client = _get_supabase_client()
     try:
-        client.table(GAME_LOGS_TABLE).insert({"payload": payload}).execute()
+        response = client.table(GAME_LOGS_TABLE).insert({"payload": payload}).execute()
     except Exception as exc:
         raise StorageError("寫入 Supabase 遊戲紀錄失敗，請確認資料表與金鑰權限。") from exc
+
+    rows = response.data or []
+    if rows and isinstance(rows[0], dict):
+        try:
+            return int(rows[0].get("id"))
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _load_game_log_from_supabase(log_id: int) -> dict[str, Any] | None:
+    """正式部署用：依照 Supabase game_logs.id 取回該場 payload。"""
+    client = _get_supabase_client()
+    try:
+        response = (
+            client.table(GAME_LOGS_TABLE)
+            .select("id,payload,created_at")
+            .eq("id", log_id)
+            .limit(1)
+            .execute()
+        )
+    except Exception as exc:
+        raise StorageError("從 Supabase 讀取遊戲紀錄失敗，請確認 log id 與資料表。") from exc
+
+    rows = response.data or []
+    if not rows or not isinstance(rows[0], dict):
+        return None
+
+    payload = rows[0].get("payload")
+    return payload if isinstance(payload, dict) else None

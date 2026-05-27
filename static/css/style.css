@@ -555,9 +555,12 @@ h2 {
     background: var(--amber);
 }
 
-.game-over.is-exporting-report .game-over-actions,
-.game-over.is-exporting-report .report-dialog {
+.game-over.is-capturing-report .game-over-actions {
     display: none !important;
+}
+
+.game-over.is-capturing-report .report-dialog {
+    pointer-events: auto;
 }
 
 @media (max-width: 900px) {

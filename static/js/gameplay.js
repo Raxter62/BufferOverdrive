@@ -342,7 +342,15 @@ function endGame() {
             history: game.history,
             typeStats: game.typeStats
         })
-    }).catch((err) => console.error("Log error", err));
+    })
+        .then((res) => res.json())
+        .then((data) => {
+            // 後端會回傳 Supabase game_logs.id，寄戰報時用它讀回該場 log。
+            if (data?.logId && game) {
+                game.reportLogId = data.logId;
+            }
+        })
+        .catch((err) => console.error("Log error", err));
 
     if (gameOverRevealTimer) {
         clearTimeout(gameOverRevealTimer);

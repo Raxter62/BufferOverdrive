@@ -1400,6 +1400,7 @@ function setReportSending(isSending) {
     ui.saveReportButton.disabled = isSending;
     ui.reportSubmitButton.disabled = isSending;
     ui.reportEmailInput.disabled = isSending;
+    // 寄送期間維持 loading 訊息在畫面上，避免使用者以為視窗被關掉。
     setReportFeedback(isSending ? "正在產生 PDF 並寄送..." : "", "");
 }
 
@@ -1425,12 +1426,14 @@ async function generateBattleReportPdfBase64() {
 
     await waitForReportRenderReady();
 
-    ui.gameOverPanel.classList.add("is-exporting-report");
+    // 截圖時只讓 html2canvas 忽略 dialog，實際畫面仍保留 loading 狀態。
+    ui.gameOverPanel.classList.add("is-capturing-report");
     await new Promise((resolve) => requestAnimationFrame(resolve));
 
     try {
         const canvas = await html2canvas(ui.gameOverPanel, {
             backgroundColor: "#071018",
+            ignoreElements: (element) => element?.id === "reportDialog",
             scale: 2,
             useCORS: true
         });
@@ -1456,7 +1459,7 @@ async function generateBattleReportPdfBase64() {
 
         return pdf.output("datauristring").split(",", 2)[1];
     } finally {
-        ui.gameOverPanel.classList.remove("is-exporting-report");
+        ui.gameOverPanel.classList.remove("is-capturing-report");
     }
 }
 
@@ -1482,6 +1485,7 @@ async function submitBattleReport(event) {
                 email,
                 filename,
                 pdfBase64,
+                logId: game.reportLogId,
                 summary: game.reportSummary || {}
             })
         });

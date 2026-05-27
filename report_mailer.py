@@ -53,7 +53,7 @@ def _safe_filename(filename: str | None) -> str:
     return cleaned[:120]
 
 
-def _summary_html(summary: dict[str, Any]) -> str:
+def _summary_html(summary: dict[str, Any], analysis: str | None = None) -> str:
     """把前端送來的戰報摘要轉成 email 內文，PDF 仍是主要附件。"""
     score = html.escape(str(summary.get("score", "")))
     ended_at = html.escape(str(summary.get("endedAt", "")))
@@ -62,6 +62,8 @@ def _summary_html(summary: dict[str, Any]) -> str:
     absorbed = html.escape(str(summary.get("absorbed", "")))
     discarded = html.escape(str(summary.get("discarded", "")))
     flushes = html.escape(str(summary.get("flushes", "")))
+    # LLM 分析會放進 email HTML，先 escape 再保留換行用的 <br>。
+    analysis_html = html.escape(analysis or "戰報分析暫時無法產生，PDF 戰報仍已附上。").replace("&lt;br&gt;", "<br>")
 
     return f"""
     <div style="font-family:Arial,'Microsoft JhengHei',sans-serif;color:#0b1720;">
@@ -76,6 +78,10 @@ def _summary_html(summary: dict[str, Any]) -> str:
             <li>Discarded: <strong>{discarded}</strong></li>
             <li>Flushes: <strong>{flushes}</strong></li>
         </ul>
+        <div style="margin-top:18px;padding:14px;border-left:4px solid #32d6ff;background:#f3fbff;">
+            <h3 style="margin:0 0 8px;color:#0b1720;">戰報分析師評語</h3>
+            <p style="margin:0;line-height:1.7;">{analysis_html}</p>
+        </div>
     </div>
     """
 
@@ -85,6 +91,7 @@ def send_battle_report(
     pdf_base64: str,
     filename: str | None = None,
     summary: dict[str, Any] | None = None,
+    analysis: str | None = None,
 ) -> dict[str, Any]:
     """使用 Resend 將前端產生的 PDF 戰報寄出。"""
     api_key = os.environ.get("RESEND_API_KEY")
@@ -112,7 +119,7 @@ def send_battle_report(
         "from": from_email,
         "to": [recipient],
         "subject": "BUFFER OVERDRIVE Battle Report",
-        "html": _summary_html(summary or {}),
+        "html": _summary_html(summary or {}, analysis),
         "attachments": [
             {
                 "filename": safe_name,

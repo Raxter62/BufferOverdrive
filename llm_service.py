@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import os
+import json
 import re
 import threading
 from configparser import ConfigParser
@@ -235,4 +236,90 @@ def generate_boss_taunt(context: dict[str, Any], tone: str) -> dict[str, Any]:
 
     result["ok"] = True
     result["reply"] = cleaned
+    return result
+
+
+REPORT_ANALYSIS_MAX_CHARS = 900
+
+_REPORT_ANALYST_SYSTEM_PROMPT = (
+    "你是 BUFFER OVERDRIVE 的戰報分析師。"
+    "你的任務是根據單局遊戲 log 摘要，寫出玩家能看懂、具體、有行動建議的繁體中文戰報分析"
+    "請用專業但不冷冰冰的語氣，有點幽默風趣，分析操作節奏、風險管理、Flush 時機、資料處理偏好、Boss/Endless 表現，偶爾可以開開玩笑"
+    "限制：不要使用 Markdown 表格，不要編造不存在的數字"
+    "輸出 3 到 5 句，總長控制在 200 個中文字以內"
+)
+
+
+def _sanitize_report_analysis(text: str) -> str:
+    """整理戰報分析文字，避免 email 裡出現過長或空白過多的內容。"""
+    if not text:
+        return ""
+    cleaned = text.strip().replace("\r", " ").replace("\n", "<br>")
+    cleaned = re.sub(r"(<br>\s*){3,}", "<br><br>", cleaned)
+    if len(cleaned) > REPORT_ANALYSIS_MAX_CHARS:
+        cleaned = cleaned[:REPORT_ANALYSIS_MAX_CHARS].rstrip() + "..."
+    return cleaned
+
+
+def generate_battle_report_analysis(analysis_payload: dict[str, Any]) -> dict[str, Any]:
+    """讓戰報分析師根據精簡後的 Supabase 單局 log 產生 email 分析文字。"""
+    result = {
+        "ok": False,
+        "analysis": "",
+        "error": None,
+        "detail": None,
+        "httpStatus": None,
+        "backend": "langchain",
+        "model": None,
+    }
+
+    llm = get_llm()
+    cfg = _load_config()
+    result["model"] = _resolve_model(cfg)
+    if llm is None:
+        result["error"] = _llm_disabled_reason or "llm_unavailable"
+        result["detail"] = "LLM client is unavailable."
+        print(f"[llm_service] report analysis unavailable: {result['error']}", flush=True)
+        return result
+
+    try:
+        from langchain_core.messages import HumanMessage, SystemMessage
+    except Exception as exc:
+        result["error"] = "langchain_core_unavailable"
+        result["detail"] = str(exc)
+        print(f"[llm_service] report analysis import failed: {exc}", flush=True)
+        return result
+
+    payload_json = json.dumps(analysis_payload or {}, ensure_ascii=False, separators=(",", ":"))
+    messages = [
+        SystemMessage(content=_REPORT_ANALYST_SYSTEM_PROMPT),
+        HumanMessage(content=(
+            "請根據以下精簡後的單局遊戲 log 寫戰報分析。"
+            "請指出一個做得好的地方、一個主要風險、以及下一局可執行的建議。\n"
+            f"{payload_json}"
+        )),
+    ]
+
+    try:
+        invoke_result = llm.invoke(messages)
+    except Exception as exc:
+        message = str(exc)
+        print(f"[llm_service] report analysis LLM error: {message}", flush=True)
+        result["error"] = "langchain_invoke_failed"
+        result["detail"] = message
+        if "429" in message or "RESOURCE_EXHAUSTED" in message:
+            result["httpStatus"] = 429
+        elif "503" in message or "UNAVAILABLE" in message:
+            result["httpStatus"] = 503
+        return result
+
+    raw = _message_content_to_str(getattr(invoke_result, "content", "")).strip()
+    cleaned = _sanitize_report_analysis(raw)
+    if not cleaned:
+        result["error"] = "empty_analysis"
+        result["detail"] = "Model returned an empty battle report analysis."
+        return result
+
+    result["ok"] = True
+    result["analysis"] = cleaned
     return result

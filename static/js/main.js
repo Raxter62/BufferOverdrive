@@ -704,6 +704,7 @@ function createGameState() {
         mapTransition: null,
         elapsedMs: 0,
         endedAt: null, // 結算畫面與 PDF 戰報共用的 JS 結束時間。
+        reportLogId: null, // Supabase 單局 log id，寄戰報時交給後端做 LLM 分析。
         history: [],
         typeStats: Object.fromEntries(Object.keys(DATA_TYPES).map((key) => [key, { absorbed: 0, discarded: 0, buffer: 0 }]))
     };
