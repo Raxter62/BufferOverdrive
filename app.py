@@ -5,6 +5,7 @@ import math
 from flask import Flask, render_template, request, jsonify
 
 from llm_service import generate_boss_taunt
+from storage import StorageError, append_game_log, load_leaderboard, save_leaderboard
 
 # Flask 應用程式實例
 app = Flask(__name__)
@@ -263,9 +264,10 @@ def boss_taunt():
     return jsonify(result), status_code
 
 
-# 排行榜與單場紀錄目前都先存成本地檔案
-LEADERBOARD_FILE = "leaderboard.json"
-GAME_LOGS_FILE = "game_logs.jsonl"
+# 排行榜與單場紀錄目前都先存成本地檔案 (已修改，不再使用)
+# LEADERBOARD_FILE = "leaderboard.json"
+# GAME_LOGS_FILE = "game_logs.jsonl"
+# 排行榜與遊戲紀錄已交由 storage.py 處理，部署時可切換到 Supabase。
 
 def choose_data_type(phase, flush_danger, risk_level):
     """依模式、Flush 狀態與風險值決定下一個資料類型。"""
@@ -372,24 +374,39 @@ def get_flush_drops():
 @app.route('/api/leaderboard', methods=['GET', 'POST'])
 def leaderboard():
     """讀取或覆寫排行榜資料。"""
-    if request.method == 'GET':
-        if os.path.exists(LEADERBOARD_FILE):
-            with open(LEADERBOARD_FILE, 'r', encoding='utf-8') as f:
-                return jsonify(json.load(f))
-        return jsonify([])
-    elif request.method == 'POST':
-        scores = request.json
-        with open(LEADERBOARD_FILE, 'w', encoding='utf-8') as f:
-            json.dump(scores, f, ensure_ascii=False)
+    # 前端 API 路徑維持不變，實際儲存位置交給 storage.py 判斷。
+    try:
+        if request.method == 'GET':
+            return jsonify(load_leaderboard())
+
+        scores = request.get_json(silent=True)
+        save_leaderboard(scores if isinstance(scores, list) else [])
         return jsonify({"status": "ok"})
+    except StorageError as exc:
+        app.logger.exception("Leaderboard storage failed")
+        return jsonify({
+            "status": "error",
+            "error": "storage_unavailable",
+            "detail": str(exc)
+        }), 503
 
 @app.route('/api/log_event', methods=['POST'])
 def log_event():
     """將單場遊戲的統計結果追加寫入紀錄檔。"""
-    data = request.json
-    with open(GAME_LOGS_FILE, "a", encoding="utf-8") as f:
-        f.write(json.dumps(data, ensure_ascii=False) + "\n")
-    return jsonify({"status": "ok"})
+    # 遊戲結束紀錄格式不改，部署後只把寫入位置換成 Supabase。
+    try:
+        append_game_log(request.get_json(silent=True) or {})
+        return jsonify({"status": "ok"})
+    except StorageError as exc:
+        app.logger.exception("Game log storage failed")
+        return jsonify({
+            "status": "error",
+            "error": "storage_unavailable",
+            "detail": str(exc)
+        }), 503
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+    # Railway 會提供 PORT；本機開發沒有 PORT 時仍使用 5000。
+    port = int(os.environ.get("PORT", 5000))
+    debug = os.environ.get("FLASK_DEBUG") == "1"
+    app.run(host="0.0.0.0", debug=debug, port=port)

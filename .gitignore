@@ -1,8 +1,10 @@
 __pycache__/
 *.py[cod]
 .venv/
+supabase_schema.sql
+# 本機環境變數可能放 Supabase / Gemini 金鑰，不要提交。
+.env
 
 
 # 本機 LLM 設定（含 API key），不可上傳
 config.ini
-
