@@ -61,7 +61,7 @@ function renderPlotlyGameOverChart(container, data, layout) {
 
 // 結算畫面中兩張 Plotly 圖表共用的固定尺寸。
 const GAME_OVER_PLOT_WIDTH = 300;
-const GAME_OVER_PLOT_HEIGHT = 240;
+const GAME_OVER_PLOT_HEIGHT = 200;
 
 // 用 Plotly 繪製單場 Buffer 壓力變化折線圖。
 function drawGameOverChart(container, history) {
@@ -97,7 +97,7 @@ function drawGameOverChart(container, history) {
                 y: bufferTrace.map((point) => point.y),
                 line: {
                     color: "#32d6ff",
-                    width: 2.5
+                    width: 2.2
                 },
                 hoverinfo: "skip",
                 showlegend: false
@@ -110,7 +110,7 @@ function drawGameOverChart(container, history) {
                 y: flushTrace.map((point) => point.y),
                 marker: {
                     color: "#ff5c7c",
-                    size: 9
+                    size: 7
                 },
                 hoverinfo: "skip",
                 showlegend: false
@@ -119,7 +119,7 @@ function drawGameOverChart(container, history) {
         {
             width: GAME_OVER_PLOT_WIDTH,
             height: GAME_OVER_PLOT_HEIGHT,
-            margin: { t: 30, r: 20, b: 25, l: 20, pad: 0 },
+            margin: { t: 26, r: 18, b: 22, l: 18, pad: 0 },
             showlegend: false,
             paper_bgcolor: "rgba(0,0,0,0)",
             plot_bgcolor: "rgba(0,0,0,0)",
@@ -131,7 +131,7 @@ function drawGameOverChart(container, history) {
                 ticktext: ["0s", `${durationSeconds.toFixed(1)}s`],
                 tickfont: {
                     family: "Orbitron, 'Share Tech Mono', Consolas, monospace",
-                    size: 10,
+                    size: 9,
                     color: "#91a5b5"
                 },
                 showgrid: false,
@@ -148,7 +148,7 @@ function drawGameOverChart(container, history) {
                 ticksuffix: "%",
                 tickfont: {
                     family: "Orbitron, 'Share Tech Mono', Consolas, monospace",
-                    size: 10,
+                    size: 9,
                     color: "#91a5b5"
                 },
                 gridcolor: "rgba(145, 165, 181, 0.15)",
@@ -178,7 +178,7 @@ function drawGameOverChart(container, history) {
                     y1: 80,
                     line: {
                         color: "rgba(255, 92, 124, 0.5)",
-                        width: 1.5,
+                    width: 1.2,
                         dash: "dash"
                     }
                 }
@@ -208,7 +208,7 @@ function drawTypeRadarChart(container, typeStats) {
     });
     const maxVal = Math.max(1, ...totals);
     const radarRangeMax = maxVal * 1.2;
-    const labelRadius = maxVal * 1.16;
+    const labelRadius = maxVal * 1.1;
     const theta = categories.map((category) => category.label);
     const closedTheta = [...theta, theta[0]];
     const closedTotals = [...totals, totals[0]];
@@ -225,10 +225,10 @@ function drawTypeRadarChart(container, typeStats) {
                 fillcolor: "rgba(143, 124, 255, 0.35)",
                 line: {
                     color: "#8f7cff",
-                    width: 2
+                    width: 1.8
                 },
                 marker: {
-                    size: 8,
+                    size: 7,
                     color: [...categories.map((category) => category.color), categories[0].color]
                 },
                 hoverinfo: "skip",
@@ -242,7 +242,7 @@ function drawTypeRadarChart(container, typeStats) {
                 text: theta,
                 textfont: {
                     family: "Orbitron, 'Share Tech Mono', Consolas, monospace",
-                    size: 11,
+                    size: 10,
                     color: categories.map((category) => category.color)
                 },
                 hoverinfo: "skip",
@@ -252,7 +252,7 @@ function drawTypeRadarChart(container, typeStats) {
         {
             width: GAME_OVER_PLOT_WIDTH,
             height: GAME_OVER_PLOT_HEIGHT,
-            margin: { t: 25, r: 15, b: 5, l: 15, pad: 0 },
+            margin: { t: 24, r: 12, b: 2, l: 12, pad: 0 },
             paper_bgcolor: "rgba(0,0,0,0)",
             plot_bgcolor: "rgba(0,0,0,0)",
             polar: {
