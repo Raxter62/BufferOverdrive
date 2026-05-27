@@ -128,12 +128,22 @@ DATA_TYPES = {
     "skill_freeze": {"weight": 0}
 }
 
-# 目前 Boss 的共享狀態
-BOSS_STATS = {
-    "max_hp": 400,
-    "active": False,
-    "current_hp": 400,
-}
+# Boss 的基本設定；實際血量由前端每一局自己保存，避免所有玩家共用同一份後端狀態。
+BOSS_MAX_HP = 400
+
+
+def get_request_game_id(data):
+    """從前端請求中取出 gameId，用來識別這次請求屬於哪一局。"""
+    game_id = (data or {}).get("gameId")
+    return str(game_id).strip() if game_id else ""
+
+
+def get_number_value(value, fallback):
+    """把前端傳來的數值安全轉成 float，失敗時使用預設值。"""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return fallback
 
 # Boss 技能設定
 BOSS_SKILL_INTERVAL_MIN_MS = 15000 # 最短 15 秒觸發一次技能
@@ -195,46 +205,63 @@ def roll_boss_skill_payload():
     return payload
 
 
-def get_boss_hp_percent():
+def get_boss_hp_percent(current_hp, max_hp):
     """回傳 Boss 目前血量百分比，供前端與 LLM 共用。"""
-    return BOSS_STATS["current_hp"] / BOSS_STATS["max_hp"]
+    if max_hp <= 0:
+        return 0
+    return current_hp / max_hp
 
 @app.route('/api/boss/damage', methods=['POST'])
 def damage_boss():
-    """讓 Boss 扣血，並回傳最新的單血條結果。"""
-    damage = request.json.get('damage', 10)
-    BOSS_STATS["current_hp"] = max(0, BOSS_STATS["current_hp"] - damage)
-    if BOSS_STATS["current_hp"] <= 0:
-        BOSS_STATS["active"] = False
+    """依前端傳入的本局血量計算扣血結果；後端不保存全域 Boss 血量。"""
+    data = request.get_json(silent=True) or {}
+    game_id = get_request_game_id(data)
+    if not game_id:
+        return jsonify({"error": "missing_game_id"}), 400
+
+    max_hp = max(1, get_number_value(data.get("maxHp"), BOSS_MAX_HP))
+    current_hp = max(0, min(max_hp, get_number_value(data.get("currentHp"), max_hp)))
+    damage = max(0, get_number_value(data.get("damage"), 10))
+    next_hp = max(0, current_hp - damage)
+    defeated = next_hp <= 0
     return jsonify({
-        "hp": BOSS_STATS["current_hp"],
-        "active": BOSS_STATS["active"],
-        "max_hp": BOSS_STATS["max_hp"],
-        "hp_percent": get_boss_hp_percent()
+        "gameId": game_id,
+        "hp": next_hp,
+        "active": not defeated,
+        "defeated": defeated,
+        "max_hp": max_hp,
+        "hp_percent": get_boss_hp_percent(next_hp, max_hp)
     })
 
 
 @app.route('/api/boss/skill', methods=['POST'])
 def activate_boss_skill():
-    """讓前端取得下一次 Boss 技能與後續冷卻時間。"""
-    if not BOSS_STATS["active"]:
-        return jsonify({
-            "error": "boss_inactive",
-            "next_skill_ms": None
-        }), 409
+    """讓前端取得下一次 Boss 技能；是否仍在 Boss 戰由前端本局狀態判斷。"""
+    data = request.get_json(silent=True) or {}
+    game_id = get_request_game_id(data)
+    if not game_id:
+        return jsonify({"error": "missing_game_id"}), 400
 
-    return jsonify(roll_boss_skill_payload())
+    payload = roll_boss_skill_payload()
+    payload["gameId"] = game_id
+    return jsonify(payload)
 
 # Boss 出場時只需要把單條血量重置，不再帶入任何切階段狀態。
 @app.route('/api/boss/spawn', methods=['POST'])
 def spawn_boss():
-    """重置 Boss 血量並標記為出現中。"""
-    BOSS_STATS["current_hp"] = BOSS_STATS["max_hp"]
-    BOSS_STATS["active"] = True
+    """回傳本局 Boss 初始資料；後端不保存任何共用血量。"""
+    data = request.get_json(silent=True) or {}
+    game_id = get_request_game_id(data)
+    if not game_id:
+        return jsonify({"error": "missing_game_id"}), 400
+
     return jsonify({
-        "status": "ok", 
-        "hp": BOSS_STATS["current_hp"], 
-        "max_hp": BOSS_STATS["max_hp"],
+        "status": "ok",
+        "gameId": game_id,
+        "hp": BOSS_MAX_HP,
+        "max_hp": BOSS_MAX_HP,
+        "active": True,
+        "hp_percent": 1,
         "next_skill_ms": roll_boss_skill_interval_ms()
     })
 

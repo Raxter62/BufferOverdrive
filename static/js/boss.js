@@ -8,24 +8,32 @@
 async function triggerBossSpawn() {
     game.bossTriggered = true;
 
+    // Boss 出場先用前端本局狀態建立，避免等待 API 時卡住遊戲節奏。
+    game.boss = {
+        active: true,
+        hp: BOSS_MAX_HP,
+        maxHp: BOSS_MAX_HP
+    };
+    resetBossTauntForNewFight();
+    resetBossSkillForNewFight(25000);
+    console.log("ALERT: BOSS INCOMING!");
+
     try {
-        const res = await fetch("/api/boss/spawn", { method: "POST" });
-        const data = await res.json();
+        const res = await fetch("/api/boss/spawn", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ gameId: game.gameId })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !game.boss || !game.boss.active || game.bossDefeated) return;
 
-        game.boss = {
-            active: true,
-            hp: data.hp,
-            maxHp: data.max_hp
-        };
-
-        // 每次重新開打都要重置台詞狀態，避免沿用上一場的冷卻與佇列。
-        resetBossTauntForNewFight();
+        const maxHp = Number.isFinite(data.max_hp) ? data.max_hp : BOSS_MAX_HP;
+        game.boss.maxHp = maxHp;
+        game.boss.hp = Math.min(game.boss.hp, maxHp);
         resetBossSkillForNewFight(data.next_skill_ms);
-        console.log("ALERT: BOSS INCOMING!");
     } catch (error) {
-        // 若生成失敗，放回未觸發狀態，避免之後永遠不再嘗試生成 Boss。
-        game.bossTriggered = false;
-        console.error("Failed to spawn boss:", error);
+        // 如果後端暫時無回應，維持已建立的本局 Boss 狀態即可。
+        console.warn("Boss spawn fallback:", error);
     }
 }
 
@@ -33,28 +41,18 @@ async function triggerBossSpawn() {
 async function attackBoss(damage) {
     if (!game.boss || !game.boss.active) return;
 
-    try {
-        const res = await fetch("/api/boss/damage", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ damage })
-        });
-        const status = await res.json();
+    // Boss 扣血改由前端本局自行計算，不再送到後端共用狀態。
+    const safeDamage = Number.isFinite(damage) ? Math.max(0, damage) : 0;
+    game.boss.hp = Math.max(0, game.boss.hp - safeDamage);
+    game.boss.active = game.boss.hp > 0;
 
-        game.boss.hp = status.hp;
-        game.boss.maxHp = status.max_hp ?? game.boss.maxHp;
-        game.boss.active = status.active;
-
-        // Boss 歸零後直接進 Endless，不再有中途切狀態的過場。
-        if (!status.active && !game.bossDefeated) {
-            game.bossDefeated = true;
-            recordEvent("boss-defeated");
-            cancelBossTaunts();
-            cancelBossSkills();
-            enterEndless();
-        }
-    } catch (error) {
-        console.error("Boss damage error", error);
+    // Boss 歸零後直接進 Endless，不再受到 LLM 或 Railway worker 狀態影響。
+    if (!game.boss.active && !game.bossDefeated) {
+        game.bossDefeated = true;
+        recordEvent("boss-defeated");
+        cancelBossTaunts();
+        cancelBossSkills();
+        enterEndless();
     }
 }
 
@@ -305,7 +303,8 @@ function requestBossSkill() {
 
     fetch("/api/boss/skill", {
         method: "POST",
-        headers: { "Content-Type": "application/json" }
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ gameId: game.gameId })
     })
         .then(async (res) => {
             const data = await res.json().catch(() => ({}));

@@ -26,6 +26,7 @@ const SKILL_FRAME_INTERVAL_MS = 300; // 技能狀態的切圖間距
 const RESPAWN_INVINCIBLE_MS = 1000; // 角色復活後的無敵時間
 const DEATH_FRAME_SWITCH_MS = 2000; // 角色死亡後切換下一幀的時間
 const BOSS_TRIGGER_SCORE = 500; //分數達標後觸發 Boss
+const BOSS_MAX_HP = 400; // 每一局前端自行保存 Boss 血量，避免後端全域共用。
 const ENDLESS_STAGE_THRESHOLDS = [1000, 2500, 5000, 8500]; // 擊敗 Boss 後的 Endless 節奏門檻
 
 // --- Boss 即時台詞（LLM）相關常數 ---
@@ -675,9 +676,19 @@ function commitPendingLeaderboardOnUnload() {
     pendingLeaderboardEntry = null;
 }
 
+
+function createGameId() {
+    // 每一局都產生獨立 gameId，讓 Boss API 能辨識不同玩家的場次。
+    if (globalThis.crypto?.randomUUID) {
+        return globalThis.crypto.randomUUID();
+    }
+    return `game-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
 // 建立新的遊戲狀態物件，集中初始化所有遊戲數值
 function createGameState() {
     return {
+        gameId: createGameId(),
         running: true,
         score: 0,
         buffer: 0,
