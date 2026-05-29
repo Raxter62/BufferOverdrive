@@ -20,7 +20,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE_DIR, "config.ini")
 
 BOSS_TAUNT_MAX_CHARS = 25
-LLM_TIMEOUT_SECONDS = 10 # Gemini API 手動 deadline 最低允許 10 秒，低於此值會回 400 INVALID_ARGUMENT。
+LLM_TIMEOUT_SECONDS = 15 # Gemini API 手動 deadline 最低允許 10 秒，低於此值會回 400 INVALID_ARGUMENT。
 LLM_MAX_RETRIES = 1 # LangChain 的 Gemini client 預設重試次數是 6 次，改成重試 1 次以避免過度等待
 
 # 延遲建立 LLM client 時要共用的鎖、實例與停用原因。
